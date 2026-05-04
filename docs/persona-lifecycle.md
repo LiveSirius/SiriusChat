@@ -193,7 +193,7 @@ class NapCatAdapterConfig:
 
 ## PersonaUtils（人格生成工具）
 
-**定位**：供 `SetupWizard` 和 WebUI 共用的 LLM 驱动人格生成函数。
+**定位**：供 WebUI 共用的 LLM 驱动人格生成函数。
 
 ### 核心函数
 
@@ -240,6 +240,7 @@ data/personas/
 │   │   ├── glossary/
 │   │   └── semantic/
 │   ├── skill_data/
+│   │   └── stickers/
 │   ├── image_cache/
 │   └── logs/
 │       ├── worker.log
@@ -261,4 +262,3 @@ data/personas/
 | **PersonaStore / PersonaGenerator** | 读写 `persona.json`；生成默认人格 |
 | **OrchestrationStore** | 读写 `orchestration.json` |
 | **WebUIServer** | 通过 REST API 调用 `PersonaManager` 的所有方法 |
-| **SetupWizard** | 首次配置时通过 QQ 私聊引导用户完成 provider + orchestration + persona 配置 |

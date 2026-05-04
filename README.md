@@ -162,7 +162,7 @@ data/
         ├── memory/                 # 语义记忆
         ├── diary/                  # 日记记忆
         ├── image_cache/            # 图片缓存
-        ├── skill_data/             # 技能数据
+        ├── skill_data/             # 技能数据（含 stickers/ 表情包 RAG 库）
         └── logs/                   # 文件日志
 ```
 
@@ -214,8 +214,13 @@ asyncio.run(main())
 sirius_chat/
 ├── __init__.py
 ├── api/                          # 🔌 公开 API facade（engine/models/providers/session 等）
-├── core/                         # 🧠 编排核心真实实现
-│   ├── emotional_engine.py       # EmotionalGroupChatEngine（v1.0.0 默认引擎）
+├── core/                         # 🧠 编排核心（Mixin 架构）
+│   ├── emotional_engine.py       # EmotionalGroupChatEngine 最终类（多重继承组合）
+│   ├── engine_core.py            # 引擎基类（__init__、API、持久化）
+│   ├── pipeline.py               # 5 阶段管线 Mixin
+│   ├── prompt_builders.py        # Prompt 组装与 LLM 生成 Mixin
+│   ├── bg_tasks.py               # 7 个后台任务 Mixin
+│   ├── helpers.py                # 技能集成、用户画像、token 记录 Mixin
 │   ├── cognition.py              # 统一认知分析器（情感 + 意图）
 │   ├── response_assembler.py     # 执行层：Prompt 组装 + 风格适配
 │   ├── response_strategy.py      # 四层响应策略（立即/延迟/沉默/主动）
@@ -230,8 +235,8 @@ sirius_chat/
 ├── config/                       # ⚙️ WorkspaceConfig / SessionConfig / JSONC 管理
 ├── memory/                       # 📝 记忆子包
 │   ├── basic/                    # 基础记忆（工作窗口 + 热度 + 归档）
-│   ├── diary/                    # 日记记忆（LLM 生成、索引、检索）
-│   ├── glossary/                 # 名词解释（AI 自身知识库）
+│   ├── diary/                    # 日记记忆（LLM 生成、索引、ChromaDB 向量存储）
+│   ├── glossary/                 # 名词解释（AI 自身知识库，支持人格级隔离）
 │   ├── user/                     # 用户管理（简化 UserProfile + UserManager）
 │   ├── context_assembler.py      # 上下文组装器（basic + diary → OpenAI messages）
 │   └── semantic/                 # 语义记忆（群规范学习、氛围记录、关系状态、持久化）
@@ -240,7 +245,7 @@ sirius_chat/
 │   ├── routing.py
 │   └── middleware/
 ├── token/                        # 📊 Token 统计、SQLite 持久化与分析
-├── skills/                       # 🎯 SKILL 注册、执行与数据存储
+├── skills/                       # 🎯 SKILL 注册、执行、数据存储、表情包子系统
 ├── roleplay_prompting.py         # 🎭 人格资产生成、持久化与选择
 ├── cache/                        # ⚡ 可扩展缓存框架
 ├── performance/                  # 📈 性能分析与基准测试
@@ -248,14 +253,18 @@ sirius_chat/
 ├── persona_worker.py             # 🎭 单个人格子进程入口
 ├── persona_config.py             # 🎭 人格级配置模型
 ├── webui/                        # 🌐 WebUI 管理面板
-│   ├── server.py                 # aiohttp REST API
-│   └── static/                   # 前端页面
+│   ├── server.py                 # aiohttp REST API 主入口
+│   ├── server_core.py            # 核心路由与基础设施
+│   ├── persona_api.py            # 人格管理 API
+│   ├── memory_api.py             # 记忆管理 API
+│   ├── napcat_api.py             # NapCat 管理 API
+│   ├── server_skill_api.py       # SKILL 管理 API
+│   └── static/                   # 前端页面（16 个页面）
 ├── platforms/                    # 🔗 平台适配层
 │   ├── napcat_manager.py         # NapCat 多实例管理
 │   ├── napcat_adapter.py         # NapCat WebSocket 适配
 │   ├── napcat_bridge.py          # QQ 桥接器
 │   ├── runtime.py                # EngineRuntime 封装
-│   └── setup_wizard.py           # 首次配置向导
 
 └── cli.py                        # 🖥️ 库内薄 CLI（已移除）
 
@@ -271,10 +280,13 @@ tests/                            # ✅ 单元测试 (540+ 个)
 
 docs/                             # 📚 文档
 ├── architecture.md               # 架构总览
-├── orchestration-policy.md       # 模型编排与任务路由
-├── configuration.md              # 配置指南
-├── full-architecture-flow.md     # 详细数据流
-└── external-usage.md             # 库调用指南
+├── full-architecture-flow.md     # 完整架构流程图
+├── configuration-guide.md        # 配置指南
+├── persona-lifecycle.md          # 多人格生命周期
+├── platforms.md                  # 平台适配层
+├── change-impact-guide.md        # 变更联动确认指南
+├── sticker-rag-system.md         # 表情包 RAG 系统
+└── ...                           # 更多文档（17 个）
 
 examples/                         # 💡 使用示例
 ├── session.json                  # 基础会话配置
@@ -736,6 +748,20 @@ python -m pytest tests/test_engine.py::test_roleplay_engine_multi_human_single_a
 ---
 
 ## 🆕 最新变更
+
+### ✨ **v1.1.0 重要变更**
+- **引擎 Mixin 架构重构**：`EmotionalGroupChatEngine` 拆分为 1 基类 + 4 Mixin（`engine_core` / `pipeline` / `prompt_builders` / `bg_tasks` / `helpers`），通过多重继承组合为最终类
+- **表情包 RAG 系统**：新增 `skills/sticker/` 子系统，支持表情包向量索引、偏好管理、学习、反馈观察、新鲜度衰减；引擎层集成表情包发送决策
+- **WebUI 架构重构**：`server.py` 拆分为 `server_core.py` + 4 个 API 模块（`persona_api` / `memory_api` / `napcat_api` / `server_skill_api`）；新增 16 个管理页面
+- **NapCatBridge 事件总线模式**：从轮询模式改为事件总线监听（`_event_bus_listener`），通过 `SessionEventType` 订阅异步事件
+- **ChromaDB 日记向量存储**：日记记忆系统引入 ChromaDB 作为向量存储后端，提升语义检索质量
+- **GlossaryManager 人格级隔离**：名词解释支持按人格隔离，提供迁移工具
+- **Reminder 多选星期**：提醒系统支持 weekly 模式多选星期几（`weekdays: [0,2,4]`）
+- **后台任务增至 7 个**：新增 `_bg_sticker_novelty_updater`（表情包新鲜度衰减）
+- **新增事件类型**：`DEVELOPER_CHAT_TRIGGERED`（开发者私聊主动对话）
+- **pytest-xdist 并行测试**：支持多进程并行执行单元测试
+- **SKILL 遥测**：新增 `skills/telemetry.py`，记录 SKILL 执行遥测数据
+- **配置/Token 模块拆分**：`config_manager.py` → `manager.py`、`token_store.py` → `store.py`
 
 ### ✨ **v1.0 重大变更**
 - **EmotionalGroupChatEngine 成为唯一默认引擎**：四层认知架构（感知→认知→决策→执行），支持情感分析、延迟响应、主动发言、群隔离记忆

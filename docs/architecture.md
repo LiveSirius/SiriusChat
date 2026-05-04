@@ -47,10 +47,10 @@ Sirius Chat 是一个面向"多人用户与单主 AI"交互场景的编排框架
 | `sirius_chat/persona_config.py` | 人格级配置模型：adapters、experience、paths | 不处理全局配置 |
 | `sirius_chat/platforms/` | NapCat 多实例管理、QQ 桥接器、EngineRuntime 封装、setup wizard | 不介入高层人格调度 |
 | `sirius_chat/webui/` | WebUI REST API + 静态页面 | 不直接操作 NapCat 进程 |
-| `sirius_chat/core/` | 编排核心：`EmotionalGroupChatEngine`、意图分析、情感分析、响应策略、阈值引擎、节奏分析、事件总线、身份解析 | 不负责人格目录组织 |
+| `sirius_chat/core/` | 编排核心：`EmotionalGroupChatEngine`（Mixin 架构：`engine_core` + `pipeline` + `prompt_builders` + `bg_tasks` + `helpers`）、意图分析、情感分析、响应策略、阈值引擎、节奏分析、事件总线、身份解析、表情包发送决策 | 不负责人格目录组织 |
 | `sirius_chat/memory/` | 基础记忆、日记记忆、用户管理、名词解释、语义记忆、上下文组装 | 不直接决定 provider 路由 |
 | `sirius_chat/providers/` | provider 协议、具体上游实现、注册表、自动路由、中间件 | 不介入高层人格生命周期 |
-| `sirius_chat/skills/` | SKILL 注册、依赖解析、执行、安全校验、遥测、数据存储；内置 `send_sticker` 等技能 | 不负责 provider 注册表 |
+| `sirius_chat/skills/` | SKILL 注册、依赖解析、执行、安全校验、遥测、数据存储；内置 `send_sticker` 等技能；表情包子系统 `skills/sticker/`（向量检索、偏好管理、学习、反馈） | 不负责 provider 注册表 |
 | `sirius_chat/config/` | SessionConfig、WorkspaceConfig、ConfigManager、JSONC、helpers | 不改变核心对话契约 |
 | `sirius_chat/models/` | 数据契约：Message、Participant、EmotionState、IntentAnalysisV3 等 | 不处理持久化 |
 | `sirius_chat/session/` | SessionStore（Json/Sqlite）、持久化后端 | 不介入对话逻辑 |
@@ -59,12 +59,18 @@ Sirius Chat 是一个面向"多人用户与单主 AI"交互场景的编排框架
 
 ### 真实的 engine 位置
 
-- **默认引擎**：`EmotionalGroupChatEngine` 的实现位于 `sirius_chat/core/emotional_engine.py`。
+- **默认引擎**：`EmotionalGroupChatEngine` 采用 Mixin 架构，由以下模块组合而成：
+  - `sirius_chat/core/emotional_engine.py`：最终类定义（多重继承组合）
+  - `sirius_chat/core/engine_core.py`：`_EmotionalGroupChatEngineBase` 基类（`__init__`、公开 API、持久化、表情包系统初始化）
+  - `sirius_chat/core/pipeline.py`：`PipelineMixin`（5 阶段管线：感知→认知→决策→执行→后台更新）
+  - `sirius_chat/core/prompt_builders.py`：`PromptBuildersMixin`（prompt 组装、LLM 生成调用）
+  - `sirius_chat/core/bg_tasks.py`：`BackgroundTasksMixin`（7 个后台任务）
+  - `sirius_chat/core/helpers.py`：`HelpersMixin`（技能集成、上下文辅助、用户画像分析、token 记录、异常分类）
 - `sirius_chat/core/cognition.py`：统一情绪+意图分析器。
 - `sirius_chat/core/response_assembler.py`：prompt 组装 + 风格适配。
-- `sirius_chat/memory/glossary/`：名词解释（AI 自身知识库，由 `learn_term` SKILL 写入）。
+- `sirius_chat/memory/glossary/`：名词解释（AI 自身知识库，由 `learn_term` SKILL 写入，支持人格级隔离与迁移）。
 - `sirius_chat/memory/basic/`：基础记忆（按群滑动窗口、热度跟踪、归档存储）。
-- `sirius_chat/memory/diary/`：日记记忆（LLM 生成摘要、索引、token 预算检索）。
+- `sirius_chat/memory/diary/`：日记记忆（LLM 生成摘要、索引、ChromaDB 向量存储后端、token 预算检索）。
 - `sirius_chat/memory/context_assembler.py`：上下文组装器（basic + diary → XML 嵌入 system prompt，只返回 `[system, user]` 2 条消息）。
 - `sirius_chat/memory/semantic/`：语义记忆（群规范学习、氛围记录、关系状态、持久化）。
 - `sirius_chat/core/identity_resolver.py`：跨平台身份解析器。

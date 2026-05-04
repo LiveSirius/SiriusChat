@@ -34,7 +34,8 @@
             │
             ▼
     子进程（独立控制台窗口）
-    ├── PersonaWorker ── EngineRuntime ── EmotionalGroupChatEngine
+    ├── PersonaWorker ── EngineRuntime ── EmotionalGroupChatEngine（Mixin 架构）
+    │       │                                   └── engine_core + pipeline + prompt_builders + bg_tasks + helpers
     │       ├── NapCatBridge ── NapCatAdapter ── OneBot v11 WS
     │       ├── BasicMemoryManager + DiaryManager + SemanticMemory
     │       ├── ModelRouter
@@ -49,7 +50,12 @@
 | 路径                                        | 说明                                 |
 | ----------------------------------------- | ---------------------------------- |
 | `main.py`                                 | 统一 CLI 入口（默认启动 WebUI；`run` 启动全部人格） |
-| `sirius_chat/core/emotional_engine.py`    | v1.0 核心情感群聊引擎                      |
+| `sirius_chat/core/emotional_engine.py`    | v1.0 核心情感群聊引擎（Mixin 最终类）       |
+| `sirius_chat/core/engine_core.py`         | 引擎基类（__init__、API、持久化）           |
+| `sirius_chat/core/pipeline.py`            | 5 阶段管线 Mixin                        |
+| `sirius_chat/core/bg_tasks.py`            | 7 个后台任务 Mixin                       |
+| `sirius_chat/core/prompt_builders.py`     | Prompt 组装与 LLM 生成 Mixin             |
+| `sirius_chat/core/helpers.py`             | 技能集成、用户画像、token 记录 Mixin         |
 | `sirius_chat/persona_manager.py`          | 多人格生命周期管理                          |
 | `sirius_chat/persona_worker.py`           | 子进程入口                              |
 | `sirius_chat/persona_config.py`           | 人格级配置模型                            |
@@ -120,7 +126,7 @@ data/
     ├── memory/                     # 语义记忆
     ├── diary/                      # 日记记忆
     ├── image_cache/                # 图片缓存
-    ├── skill_data/                 # 技能数据
+    ├── skill_data/                 # 技能数据（含 stickers/ 表情包 RAG 库）
     └── logs/                       # 文件日志
 ```
 

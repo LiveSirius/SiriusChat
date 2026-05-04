@@ -1234,11 +1234,23 @@ class BackgroundTasksMixin:
                 speaker_name=self.persona.name if self.persona else "assistant",
             )
             if skill_results:
+                _MEMORY_SKILL_RESULT_CHAR_LIMIT = 4000
+                _raw = "\n".join(skill_results)
+                if len(_raw) > _MEMORY_SKILL_RESULT_CHAR_LIMIT:
+                    _truncated = _raw[:_MEMORY_SKILL_RESULT_CHAR_LIMIT]
+                    _last_nl = _truncated.rfind("\n")
+                    if _last_nl > _MEMORY_SKILL_RESULT_CHAR_LIMIT * 0.8:
+                        _truncated = _truncated[:_last_nl]
+                    _raw = (
+                        f"{_truncated}\n\n"
+                        f"[注：技能结果过长，已截断至前 {_MEMORY_SKILL_RESULT_CHAR_LIMIT} 字符，"
+                        f"原始长度 {len(_raw)} 字符]"
+                    )
                 self.basic_memory.add_entry(
                     group_id=group_id,
                     user_id="skill_system",
                     role="system",
-                    content=f"[技能执行结果]\n{'\n'.join(skill_results)}",
+                    content=f"[技能执行结果]\n{_raw}",
                 )
 
         # If the loop ended because max rounds were exhausted and the last round

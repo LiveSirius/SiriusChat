@@ -49,15 +49,22 @@ sirius_chat/
 ├── exceptions.py            # 自定义异常
 ├── logging_config.py        # 日志配置（按日轮转、7天备份、归档）
 ├── roleplay_prompting.py    # 人格资产生成、持久化与选择（旧版兼容）
-├── core/                    # 编排核心
-│   ├── emotional_engine.py  # EmotionalGroupChatEngine（v1.0 唯一引擎）
+├── prompt_builders.py       # 提示词构建器
+├── prompt_templates.py      # 提示词模板
+├── core/                    # 编排核心（Mixin 架构）
+│   ├── emotional_engine.py  # EmotionalGroupChatEngine 最终类（多重继承组合）
+│   ├── engine_core.py       # _EmotionalGroupChatEngineBase 基类（__init__、API、持久化）
+│   ├── pipeline.py          # PipelineMixin（5 阶段管线：感知→认知→决策→执行→后台）
+│   ├── prompt_builders.py   # PromptBuildersMixin（prompt 组装、LLM 生成调用）
+│   ├── bg_tasks.py          # BackgroundTasksMixin（7 个后台任务）
+│   ├── helpers.py           # HelpersMixin（技能集成、用户画像、token 记录）
 │   ├── cognition.py         # 统一认知分析器（情绪+意图联合推断）
 │   ├── response_assembler.py # Prompt 组装 + 风格适配
 │   ├── response_strategy.py # 四层响应策略（IMMEDIATE/DELAYED/SILENT/PROACTIVE）
 │   ├── model_router.py      # 任务感知模型选择
 │   ├── threshold_engine.py  # 动态阈值引擎
 │   ├── rhythm.py            # 对话节奏分析
-│   ├── events.py            # 会话事件流（PERCEPTION/COGNITION/DECISION/EXECUTION）
+│   ├── events.py            # 会话事件流（PERCEPTION/COGNITION/DECISION/EXECUTION/DELAYED/PROACTIVE/DEVELOPER_CHAT/REMINDER）
 │   ├── identity_resolver.py # 跨平台身份解析
 │   ├── delayed_response_queue.py # 延迟响应队列
 │   ├── proactive_trigger.py # 主动触发器
@@ -70,9 +77,9 @@ sirius_chat/
 ├── async_engine/            # 兼容导出 + prompts/orchestration/utils 辅助层
 ├── memory/                  # 记忆子包
 │   ├── basic/               # 基础记忆（滑动窗口+热度+归档）
-│   ├── diary/               # 日记记忆（LLM生成、索引、检索）
+│   ├── diary/               # 日记记忆（LLM生成、索引、ChromaDB 向量存储、检索）
 │   ├── semantic/            # 语义记忆（群规范、氛围、关系状态）
-│   ├── glossary/            # 名词解释（AI自身知识）
+│   ├── glossary/            # 名词解释（AI自身知识，支持人格级隔离与迁移）
 │   ├── user/                # 用户管理（极简UserProfile+群隔离）
 │   ├── context_assembler.py # 上下文组装器
 │   └── cognition_store.py   # 认知状态持久化
@@ -105,7 +112,6 @@ sirius_chat/
 │   ├── napcat_adapter.py    # OneBot v11 WebSocket客户端
 │   ├── napcat_bridge.py     # QQ群聊/私聊桥接器
 │   ├── runtime.py           # EngineRuntime封装（单个人格子进程内）
-│   ├── setup_wizard.py      # 首次启动配置向导
 │   └── persona_utils.py     # 人格生成工具函数
 ├── skills/                  # SKILL系统
 │   ├── registry.py          # SKILL注册与发现
@@ -115,7 +121,8 @@ sirius_chat/
 │   ├── data_store.py        # SKILL独立JSON数据存储
 │   ├── dependency_resolver.py # 依赖自动解析安装
 │   ├── telemetry.py         # 执行遥测记录
-│   └── builtin/             # 内置技能（system_info/learn_term/bing_search/file_list/file_read/file_write/upload_file/send_image/send_workspace_file/reminder/desktop_screenshot等）
+│   ├── builtin/             # 内置技能（system_info/learn_term/bing_search/file_list/file_read/file_write/upload_file/send_image/send_workspace_file/reminder/desktop_screenshot/url_content_reader/weather等）
+│   └── sticker/             # 表情包子系统（RAG 向量检索、偏好管理、学习、反馈、新鲜度）
 ├── session/                 # 会话持久化
 │   └── store.py             # JsonSessionStore/SqliteSessionStore/SessionStoreFactory
 ├── token/                   # Token统计
@@ -126,8 +133,13 @@ sirius_chat/
 ├── utils/                   # 工具
 │   └── layout.py            # WorkspaceLayout路径布局
 └── webui/                   # WebUI管理面板
-    ├── server.py            # aiohttp REST API
-    └── static/              # 前端页面
+    ├── server.py            # aiohttp REST API 主入口
+    ├── server_core.py       # 核心路由与基础设施
+    ├── persona_api.py       # 人格管理 API
+    ├── memory_api.py        # 记忆管理 API
+    ├── napcat_api.py        # NapCat 管理 API
+    ├── server_skill_api.py  # SKILL 管理 API
+    └── static/              # 前端页面（16 个页面）
 ```
 
 ### 关键配置文件
