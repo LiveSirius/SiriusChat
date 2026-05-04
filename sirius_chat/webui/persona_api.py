@@ -12,7 +12,7 @@ from aiohttp import web
 from sirius_chat.core.orchestration_store import OrchestrationStore
 from sirius_chat.core.persona_store import PersonaStore
 from sirius_chat.models.persona import PersonaProfile
-from sirius_chat.persona_config import PersonaAdaptersConfig, PersonaExperienceConfig
+from sirius_chat.persona_config import AdapterConfig, PersonaAdaptersConfig, PersonaExperienceConfig
 from sirius_chat.platforms.persona_utils import generate_persona_from_interview
 from sirius_chat.providers.routing import WorkspaceProviderManager
 from sirius_chat.webui.server_core import _get_name, _json_response, LOG
@@ -432,7 +432,7 @@ async def api_adapters_post(request: web.Request, persona_manager: Any) -> web.R
 
     adapters = PersonaAdaptersConfig.load(paths.adapters)
     if "adapters" in body and isinstance(body["adapters"], list):
-        adapters.adapters = [PersonaAdaptersConfig.Adapter(**a) for a in body["adapters"]]
+        adapters.adapters = [AdapterConfig(**a) for a in body["adapters"]]
 
     adapters.save(paths.adapters)
     return _json_response({"success": True})

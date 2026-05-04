@@ -84,6 +84,55 @@ class TestDiaryGenerator:
         )
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_generate_retry_on_invalid_json(self) -> None:
+        gen = DiaryGenerator()
+        mock_provider = AsyncMock()
+        mock_provider.generate_async.side_effect = [
+            "这不是 JSON",
+            '{"content": "重试成功", "keywords": ["k"], "summary": "摘要", '
+            '"dominant_topic": "话题", "interest_topics": ["t1"]}',
+        ]
+        candidates = [
+            BasicMemoryEntry("b1", "g1", "alice", "human", "hello", "2026-04-22T10:00:00+00:00"),
+        ]
+        result = await gen.generate(
+            group_id="g1",
+            candidates=candidates,
+            persona_name="小星",
+            persona_description="",
+            provider_async=mock_provider,
+            model_name="gpt-4o-mini",
+            max_retries=2,
+        )
+        assert result is not None
+        assert result.entry.content == "重试成功"
+        assert mock_provider.generate_async.await_count == 2
+        # 第二次请求的系统提示应包含重试提醒
+        second_call = mock_provider.generate_async.await_args_list[1]
+        request = second_call[0][0]
+        assert "重要提醒" in request.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_generate_retry_exhausted(self) -> None:
+        gen = DiaryGenerator()
+        mock_provider = AsyncMock()
+        mock_provider.generate_async.return_value = "永远不是 JSON"
+        candidates = [
+            BasicMemoryEntry("b1", "g1", "alice", "human", "hello", "2026-04-22T10:00:00+00:00"),
+        ]
+        result = await gen.generate(
+            group_id="g1",
+            candidates=candidates,
+            persona_name="小星",
+            persona_description="",
+            provider_async=mock_provider,
+            model_name="gpt-4o-mini",
+            max_retries=1,
+        )
+        assert result is None
+        assert mock_provider.generate_async.await_count == 2
+
 
 class TestDiaryIndexer:
     def test_keyword_search(self) -> None:

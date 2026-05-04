@@ -79,40 +79,70 @@ class DiaryGenerator:
         model_name: str,
         temperature: float = 0.5,
         max_tokens: int = 512,
+        max_retries: int = 2,
     ) -> DiaryGenerationResult | None:
         """Generate a diary entry from candidate messages.
 
         Returns None if generation fails or candidates are empty.
+        On JSON parse failure, retries up to *max_retries* times with a
+        stronger system prompt reminder.
         """
         if not candidates:
             return None
 
         from sirius_chat.providers.base import GenerationRequest
 
-        request = GenerationRequest(
-            model=model_name,
-            system_prompt=_DIARY_SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": _build_diary_user_prompt(
-                    persona_name, persona_description, candidates
-                ),
-            }],
-            temperature=temperature,
-            max_tokens=max_tokens,
-            purpose="diary_generate",
+        system_prompt = _DIARY_SYSTEM_PROMPT
+        user_prompt = _build_diary_user_prompt(
+            persona_name, persona_description, candidates
         )
-        self._last_request = request
 
-        try:
-            raw = await provider_async.generate_async(request)
-        except Exception as exc:
-            logger.warning("日记生成 LLM 调用失败 (group=%s): %s", group_id, exc)
-            return None
+        for attempt in range(max_retries + 1):
+            request = GenerationRequest(
+                model=model_name,
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                purpose="diary_generate",
+            )
+            self._last_request = request
 
-        parsed = self._parse_response(raw)
-        if not parsed:
-            return None
+            try:
+                raw = await provider_async.generate_async(request)
+            except Exception as exc:
+                logger.warning(
+                    "日记生成 LLM 调用失败 (group=%s, attempt=%d/%d): %s",
+                    group_id,
+                    attempt + 1,
+                    max_retries + 1,
+                    exc,
+                )
+                return None
+
+            parsed = self._parse_response(raw)
+            if parsed:
+                break
+
+            if attempt < max_retries:
+                logger.warning(
+                    "日记生成响应 JSON 解析失败 (group=%s, attempt=%d/%d)，准备重试",
+                    group_id,
+                    attempt + 1,
+                    max_retries + 1,
+                )
+                system_prompt = (
+                    _DIARY_SYSTEM_PROMPT
+                    + "\n\n【重要提醒】上一次的输出不是合法 JSON，"
+                    "请确保本次输出是严格合法的 JSON 对象，不要包含任何其他文字。"
+                )
+            else:
+                logger.warning(
+                    "日记生成响应 JSON 解析失败 (group=%s)，已耗尽 %d 次重试",
+                    group_id,
+                    max_retries + 1,
+                )
+                return None
 
         now_iso = datetime.now(timezone.utc).isoformat()
         entry = DiaryEntry(

@@ -99,14 +99,15 @@ class PersonaManager:
         # 如果已有分配，先验证是否仍可用
         if name in ports:
             allocated = ports[name]
-            if self._is_port_free(allocated):
-                return allocated
+            allocated_port = allocated["port"] if isinstance(allocated, dict) else allocated
+            if self._is_port_free(allocated_port):
+                return allocated_port
             # 端口已被占用，重新分配
-            LOG.warning("人格 %s 的端口 %s 已被占用，重新分配", name, allocated)
+            LOG.warning("人格 %s 的端口 %s 已被占用，重新分配", name, allocated_port)
             del ports[name]
 
         base_port = int(self.global_config.get("napcat_base_port", 3001))
-        used = set(ports.values())
+        used = {v["port"] if isinstance(v, dict) else v for v in ports.values()}
         port = base_port
         while port in used or not self._is_port_free(port):
             port += 1
