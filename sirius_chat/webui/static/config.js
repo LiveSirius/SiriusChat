@@ -1114,8 +1114,14 @@ async function loadStickers() {
     const prefBody = $('stickerPreferenceBody');
     if (pref && Object.keys(pref).length > 0) {
       prefCard.style.display = 'block';
-      const preferred = (pref.preferred_tags || []).join('、') || '无';
-      const avoided = (pref.avoided_tags || []).join('、') || '无';
+      const preferredTags = pref.preferred_tags || [];
+      const avoidedTags = pref.avoided_tags || [];
+      const preferred = preferredTags.length > 0
+        ? preferredTags.map(t => `<span class="tag" style="border-color:var(--accent)">${t}</span>`).join(' ')
+        : '<span style="color:var(--text-2)">无</span>';
+      const avoided = avoidedTags.length > 0
+        ? avoidedTags.map(t => `<span class="tag" style="border-color:var(--danger)">${t}</span>`).join(' ')
+        : '<span style="color:var(--text-2)">无</span>';
       const novelty = ((pref.novelty_preference || 0.5) * 100).toFixed(0);
       const emotionMap = pref.emotion_tag_map || {};
       const emotionHtml = Object.keys(emotionMap).length > 0
@@ -1140,8 +1146,8 @@ async function loadStickers() {
         : '<span style="color:var(--text-2)">尚未生成</span>';
       prefBody.innerHTML = `
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px">
-          <div><strong>偏好标签：</strong><span style="color:var(--accent)">${preferred}</span></div>
-          <div><strong>回避标签：</strong><span style="color:var(--danger)">${avoided}</span></div>
+          <div><strong>偏好标签：</strong><div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">${preferred}</div></div>
+          <div><strong>回避标签：</strong><div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">${avoided}</div></div>
           <div><strong>喜新程度：</strong><span>${novelty}%</span></div>
           <div><strong>风格权重：</strong><span>${styleHtml}</span></div>
         </div>
@@ -1271,3 +1277,21 @@ async function deleteCurrentSticker() {
     toast('删除失败', 'error');
   }
 }
+
+// ── Page Loader Registrations (config) ────────────────
+registerPageLoader('global-settings', { init: loadGlobalSettings });
+registerPageLoader('persona', { init: loadPersonaPreview });
+registerPageLoader('create-persona', {
+  init: async () => { renderInterviewQuestions(); loadAvailableModels(); },
+  refresh: renderInterviewQuestions,
+});
+registerPageLoader('orchestration', { init: loadOrchestration });
+registerPageLoader('experience', { init: loadExperience });
+registerPageLoader('adapters', { init: loadAdapters });
+registerPageLoader('skills', { init: loadSkills, refresh: null });
+registerPageLoader('providers', { init: _renderProviderDraft, refresh: null });
+registerPageLoader('napcat', {
+  init: async () => { ncLoadStatus(); ncLoadLogs(); },
+  refresh: null,
+});
+registerPageLoader('stickers', { init: loadStickers });

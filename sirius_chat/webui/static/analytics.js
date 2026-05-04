@@ -1055,3 +1055,10 @@ async function glossaryLoadData() {
     if (listEl) listEl.innerHTML = '<div style="color:var(--text-2);padding:12px">加载失败</div>';
   }
 }
+
+// ── Page Loader Registrations (analytics) ─────────────
+registerPageLoader('token-tracker', { init: loadTokenTracker, refresh: ttLoadData });
+registerPageLoader('cognition', { init: loadCognition });
+registerPageLoader('diary', { init: diaryLoadData });
+registerPageLoader('users', { init: loadUsers });
+registerPageLoader('glossary', { init: loadGlossary });

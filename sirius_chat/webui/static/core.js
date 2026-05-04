@@ -5,6 +5,15 @@ let personaState = {};
 let providerDraft = [];
 let currentPage = 'dashboard';
 
+const PAGE_LOADERS = {};
+
+function registerPageLoader(page, { init, refresh } = {}) {
+  PAGE_LOADERS[page] = {
+    init: init || null,
+    refresh: refresh === undefined ? (init || null) : refresh,
+  };
+}
+
 // Adapter 白名单的独立状态（避免被 personaState 覆盖丢失）
 let adapterGroupIds = [];
 let adapterPrivateIds = [];
@@ -151,22 +160,8 @@ async function navTo(page) {
     selectPersona(personas[0].name);
   }
 
-  if (page === 'dashboard') { renderPersonaCards(); loadProviders(); _lastTelemetryData = null; _lastTokenData = null; loadTokenStats(); }
-  if (page === 'global-settings') loadGlobalSettings();
-  if (page === 'persona') loadPersonaPreview();
-  if (page === 'create-persona') { renderInterviewQuestions(); loadAvailableModels(); }
-  if (page === 'orchestration') loadOrchestration();
-  if (page === 'experience') loadExperience();
-  if (page === 'adapters') loadAdapters();
-  if (page === 'skills') loadSkills();
-  if (page === 'providers') _renderProviderDraft();
-  if (page === 'napcat') { ncLoadStatus(); ncLoadLogs(); }
-  if (page === 'token-tracker') loadTokenTracker();
-  if (page === 'cognition') loadCognition();
-  if (page === 'diary') diaryLoadData();
-  if (page === 'users') loadUsers();
-  if (page === 'glossary') loadGlossary();
-  if (page === 'stickers') loadStickers();
+  const loader = PAGE_LOADERS[page];
+  if (loader?.init) await loader.init();
 
   // Replace native <select> with custom dropdowns after page loads
   setTimeout(() => mountCustomSelects(), 0);
@@ -297,18 +292,8 @@ async function loadPersonaStatus() {
   try {
     personaState = await get(pApi('/status'));
     updateSidebar();
-    if (currentPage === 'dashboard') renderPersonaCards();
-    if (currentPage === 'global-settings') loadGlobalSettings();
-    if (currentPage === 'persona') loadPersonaPreview();
-    if (currentPage === 'create-persona') renderInterviewQuestions();
-    if (currentPage === 'orchestration') loadOrchestration();
-    if (currentPage === 'experience') loadExperience();
-    if (currentPage === 'adapters') loadAdapters();
-    if (currentPage === 'token-tracker') await ttLoadData();
-    if (currentPage === 'cognition') await loadCognition();
-    if (currentPage === 'diary') diaryLoadData();
-    if (currentPage === 'users') loadUsers();
-    if (currentPage === 'glossary') loadGlossary();
+    const loader = PAGE_LOADERS[currentPage];
+    if (loader?.refresh) await loader.refresh();
   } catch (e) {
     console.error('loadPersonaStatus', e);
   }
@@ -1005,3 +990,9 @@ async function stopPersona(name) {
   toast(res.success ? `人格 ${name} 已停止` : res.error || '停止失败', res.success ? 'success' : 'error');
   loadPersonas();
 }
+
+// ── Page Loader Registrations (core) ──────────────────
+registerPageLoader('dashboard', {
+  init: async () => { renderPersonaCards(); loadProviders(); _lastTelemetryData = null; _lastTokenData = null; loadTokenStats(); },
+  refresh: () => { renderPersonaCards(); },
+});

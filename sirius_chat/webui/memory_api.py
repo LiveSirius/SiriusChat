@@ -531,7 +531,7 @@ async def api_persona_stickers_get(request: web.Request, persona_manager: Any) -
     if paths is None:
         return _json_response({"error": "人格不存在"}, 404)
 
-    sticker_dir = paths.dir / "skill_data" / "stickers"
+    sticker_dir = paths.dir / "stickers"
     records_dir = sticker_dir / "records"
     pref_path = sticker_dir / "sticker_preference.json"
 
@@ -613,7 +613,7 @@ async def api_persona_sticker_detail_get(request: web.Request, persona_manager: 
     if paths is None:
         return _json_response({"error": "人格不存在"}, 404)
 
-    record_path = paths.dir / "skill_data" / "stickers" / "records" / f"{sticker_id}.json"
+    record_path = paths.dir / "stickers" / "records" / f"{sticker_id}.json"
     if not record_path.exists():
         return _json_response({"error": "表情包不存在"}, 404)
 
@@ -639,7 +639,7 @@ async def api_persona_sticker_delete(request: web.Request, persona_manager: Any)
     if paths is None:
         return _json_response({"error": "人格不存在"}, 404)
 
-    sticker_dir = paths.dir / "skill_data" / "stickers"
+    sticker_dir = paths.dir / "stickers"
     record_path = sticker_dir / "records" / f"{sticker_id}.json"
 
     try:
