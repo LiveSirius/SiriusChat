@@ -46,6 +46,7 @@ class StickerIndexer:
         self._embedding_dim: int | None = None
 
         self._records: dict[str, StickerRecord] = {}
+        self._tag_embedding_cache: dict[str, list[float]] = {}
         self._vector_store = StickerVectorStore(
             persist_dir=self._work_path / "vector_store",
             persona_name=persona_name,
@@ -294,6 +295,52 @@ class StickerIndexer:
                 scores[rid] = score
         return scores
 
+    def _tag_matches(self, record_tag: str, target_tags: list[str], threshold: float = 0.75) -> bool:
+        """精确匹配优先，失败时用 embedding 相似度兜底。"""
+        if record_tag in target_tags:
+            return True
+        if not target_tags or not self._model:
+            return False
+        tag_emb = self._get_tag_embedding(record_tag)
+        if tag_emb is None:
+            return False
+        for target in target_tags:
+            target_emb = self._get_tag_embedding(target)
+            if target_emb is not None:
+                if self._cosine_sim(tag_emb, target_emb) >= threshold:
+                    return True
+        return False
+
+    def _best_tag_match(self, record_tag: str, target_tags: list[str]) -> str | None:
+        """返回最匹配的目标标签（精确优先，否则取相似度最高的），无匹配返回 None。"""
+        if record_tag in target_tags:
+            return record_tag
+        if not target_tags or not self._model:
+            return None
+        tag_emb = self._get_tag_embedding(record_tag)
+        if tag_emb is None:
+            return None
+        best_target, best_sim = None, 0.0
+        for target in target_tags:
+            target_emb = self._get_tag_embedding(target)
+            if target_emb is not None:
+                sim = self._cosine_sim(tag_emb, target_emb)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_target = target
+        return best_target if best_sim >= 0.75 else None
+
+    def _get_tag_embedding(self, tag: str) -> list[float] | None:
+        cached = self._tag_embedding_cache.get(tag)
+        if cached is not None:
+            return cached
+        try:
+            emb = self._model.encode(tag, convert_to_tensor=False).tolist()
+            self._tag_embedding_cache[tag] = emb
+            return emb
+        except Exception:
+            return None
+
     def _score_sticker(
         self,
         record: StickerRecord,
@@ -317,27 +364,31 @@ class StickerIndexer:
             + 0.15 * min(keyword_score / 2.0, 1.0)
         )
 
-        # 2. 人格偏好匹配
+        # 2. 人格偏好匹配（精确优先，embedding 兜底）
         tag_bonus = 0.0
         tag_penalty = 0.0
         for tag in record.tags:
-            if tag in preference.preferred_tags:
+            if self._tag_matches(tag, preference.preferred_tags):
                 tag_bonus += 0.12
-            if tag in preference.avoided_tags:
+            if self._tag_matches(tag, preference.avoided_tags):
                 tag_penalty += 0.2
 
         # 3. 标签成功率加权
         tag_success_bonus = 0.0
         for tag in record.tags:
-            success_rate = preference.tag_success_rate.get(tag, 0.5)
+            matched = self._best_tag_match(tag, list(preference.tag_success_rate.keys()))
+            if matched is not None:
+                success_rate = preference.tag_success_rate[matched]
+            else:
+                success_rate = 0.5
             tag_success_bonus += (success_rate - 0.5) * 0.1
 
         # 4. 情绪匹配
         emotion_bonus = 0.0
         emotion_tags = preference.emotion_tag_map.get(emotion_hint, [])
         if emotion_tags:
-            matching = set(record.tags) & set(emotion_tags)
-            emotion_bonus = len(matching) * 0.15
+            matching_count = sum(1 for tag in record.tags if self._tag_matches(tag, emotion_tags))
+            emotion_bonus = matching_count * 0.15
 
         # 5. 新鲜度（喜新厌旧）
         novelty_boost = record.novelty_score * preference.novelty_preference * 0.25
@@ -357,7 +408,11 @@ class StickerIndexer:
         # 8. 群聊反馈加权
         group_feedback_bonus = 0.0
         for tag in record.tags:
-            feedback = preference.group_tag_feedback.get(tag, 0.5)
+            matched = self._best_tag_match(tag, list(preference.group_tag_feedback.keys()))
+            if matched is not None:
+                feedback = preference.group_tag_feedback[matched]
+            else:
+                feedback = 0.5
             group_feedback_bonus += (feedback - 0.5) * 0.08
 
         final_score = (

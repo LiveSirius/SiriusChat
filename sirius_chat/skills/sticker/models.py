@@ -5,6 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+RECOMMENDED_TAGS = (
+    "开心, 难过, 生气, 无奈, 得意, 尴尬, 委屈, 害怕, 惊讶, 无语, 傲娇, 卖萌, "
+    "上班, 游戏, 睡觉, 吃饭, 学习, 摸鱼, 加班, 恋爱, 社交, "
+    "可爱, 沙雕, 正经, 萌系, 搞笑, 治愈, 暴躁, 慵懒"
+)
+
 
 @dataclass(slots=True)
 class StickerRecord:

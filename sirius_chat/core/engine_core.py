@@ -317,7 +317,9 @@ class _EmotionalGroupChatEngineBase:
         # save to context, but skip decision/execution. The later text message will
         # pull the caption from basic memory via XML history.
         if message.multimodal_inputs and self._is_pure_image_message(message.content):
-            self._log_inner_thought(f"{speaker} 发了一张图，我先默默记下来～")
+            has_sticker = any(m.get("sub_type") == "1" for m in (message.multimodal_inputs or []))
+            label = "动画表情" if has_sticker else "图片"
+            self._log_inner_thought(f"{speaker} 发了一张{label}，我先默默记下来～")
             intent, emotion, memories, empathy = await self._cognition(
                 content, user_id, group_id,
                 sender_type=message.sender_type,

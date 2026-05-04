@@ -457,13 +457,12 @@ class NapCatBridge:
                     mention_cache[target_uid] = display
                 parts.append(f"@{mention_cache[target_uid]}")
             elif seg_type == "image":
-                parts.append(self._build_image_label(seg, image_index, "图片", image_names))
+                label = "动画表情" if str(data.get("sub_type", "")) == "1" else "图片"
+                parts.append(self._build_image_label(seg, image_index, label, image_names))
                 image_index += 1
 
         rendered = "".join(parts).strip()
-        if rendered:
-            return rendered
-        return event.get("raw_message", "").strip()
+        return rendered
 
     async def _render_private_prompt(self, event: dict[str, Any]) -> str:
         parts: list[str] = []
@@ -475,12 +474,11 @@ class NapCatBridge:
             if seg_type == "text":
                 parts.append(data.get("text", ""))
             elif seg_type == "image":
-                parts.append(self._build_image_label(seg, image_index, "图片", image_names))
+                label = "动画表情" if str(data.get("sub_type", "")) == "1" else "图片"
+                parts.append(self._build_image_label(seg, image_index, label, image_names))
                 image_index += 1
         rendered = "".join(parts).strip()
-        if rendered:
-            return rendered
-        return event.get("raw_message", "").strip()
+        return rendered
 
     # ─── 发送工具 ─────────────────────────────────────────
 
