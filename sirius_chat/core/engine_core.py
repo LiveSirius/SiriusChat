@@ -710,7 +710,7 @@ class _EmotionalGroupChatEngineBase:
     def _init_sticker_system(self) -> None:
         """Initialize the sticker RAG system."""
         try:
-            from sirius_chat.skills.builtin.send_sticker import init_sticker_system
+            from sirius_chat.skills.sticker import init_sticker_system
 
             self._sticker_system = init_sticker_system(
                 work_path=self.work_path,
@@ -751,6 +751,151 @@ class _EmotionalGroupChatEngineBase:
             request=request,
             duration_ms=duration_ms,
         )
+
+    # ------------------------------------------------------------------
+    # Sticker decision (framework-level, replaces send_sticker SKILL)
+    # ------------------------------------------------------------------
+
+    def _should_send_sticker(
+        self,
+        decision: StrategyDecision,
+        emotion: EmotionState,
+        intent: Any,
+        group_id: str,
+    ) -> bool:
+        """Framework-level sticker timing decision.
+
+        Uses existing cognition results (emotion + intent) to decide whether
+        to send a sticker alongside or instead of a text reply.
+        """
+        if self._sticker_system is None:
+            return False
+
+        # Only send stickers in group chats (not private)
+        if group_id.startswith("private_"):
+            return False
+
+        # Never send sticker if strategy is SILENT
+        if decision.strategy == ResponseStrategy.SILENT:
+            return False
+
+        # High arousal emotions are good sticker opportunities
+        arousal = getattr(emotion, "arousal", 0.0)
+        valence = getattr(emotion, "valence", 0.0)
+
+        # Joy / excitement / surprise → sticker friendly
+        basic_emotion = getattr(getattr(emotion, "basic_emotion", None), "name", "")
+        positive_emotions = {"joy", "excitement", "surprise", "amusement"}
+        is_positive = basic_emotion.lower() in positive_emotions or valence > 0.3
+
+        # Sarcasm or high entitlement → avoid stickers (might be misread)
+        sarcasm = getattr(intent, "sarcasm_score", 0.0)
+        entitlement = getattr(intent, "entitlement_score", 0.0)
+        if sarcasm > 0.6 or entitlement < 0.3:
+            return False
+
+        # Sticker probability based on arousal and positivity
+        base_prob = 0.15
+        if is_positive:
+            base_prob += 0.25
+        if arousal > 0.6:
+            base_prob += 0.20
+        elif arousal > 0.4:
+            base_prob += 0.10
+
+        # Cap at 70% to avoid overuse
+        import random
+        return random.random() < min(base_prob, 0.70)
+
+    def _emotion_to_sticker_hint(self, emotion: EmotionState) -> str:
+        """Map EmotionState to a sticker emotion hint string."""
+        basic = getattr(getattr(emotion, "basic_emotion", None), "name", "")
+        if basic:
+            return basic.lower()
+        valence = getattr(emotion, "valence", 0.0)
+        arousal = getattr(emotion, "arousal", 0.0)
+        if valence > 0.3 and arousal > 0.5:
+            return "joy"
+        if valence < -0.3:
+            return "sadness"
+        if arousal > 0.6:
+            return "anger"
+        return "neutral"
+
+    async def _send_sticker_via_bridge(
+        self,
+        group_id: str,
+        emotion_hint: str,
+        current_context: str,
+    ) -> dict[str, Any]:
+        """Search and send a sticker through the registered bridge."""
+        if self._sticker_system is None:
+            return {"success": False, "error": "sticker system not initialized"}
+
+        indexer = self._sticker_system.get("indexer")
+        preference_manager = self._sticker_system.get("preference_manager")
+        feedback_observer = self._sticker_system.get("feedback_observer")
+
+        if indexer is None or preference_manager is None:
+            return {"success": False, "error": "sticker system components incomplete"}
+
+        preference = preference_manager.load()
+        record = indexer.search(
+            current_context=current_context,
+            preference=preference,
+            emotion_hint=emotion_hint,
+            top_k=20,
+            similarity_threshold=0.5,
+        )
+
+        if record is None:
+            return {"success": False, "error": "no matching sticker found"}
+
+        from pathlib import Path
+        file_path = Path(record.file_path)
+        if not file_path.exists():
+            return {"success": False, "error": f"sticker file not found: {record.file_path}"}
+
+        # Find a napcat bridge from skill_executor
+        bridge = None
+        if self._skill_executor is not None:
+            bridge = getattr(self._skill_executor, "_bridges", {}).get("napcat")
+
+        if bridge is None:
+            return {"success": False, "error": "no napcat bridge available"}
+
+        try:
+            adapter = getattr(bridge, "adapter", None)
+            if adapter is None:
+                return {"success": False, "error": "adapter not ready"}
+
+            msg = [{"type": "image", "data": {"file": str(file_path), "sub_type": "1"}}]
+            if group_id.startswith("private_"):
+                await adapter.send_private_msg(group_id.replace("private_", ""), msg)
+            else:
+                await adapter.send_group_msg(group_id, msg)
+
+            # Record usage
+            preference_manager.record_usage(record.sticker_id, record.tags, emotion_hint)
+
+            # Start feedback observation
+            if feedback_observer is not None:
+                from datetime import datetime, timezone
+                sent_at = datetime.now(timezone.utc).isoformat()
+                asyncio.create_task(
+                    feedback_observer.observe(record.sticker_id, group_id, sent_at, wait_seconds=15.0)
+                )
+
+            return {
+                "success": True,
+                "sticker_id": record.sticker_id,
+                "file_path": str(file_path),
+                "caption": record.caption,
+                "tags": record.tags,
+            }
+        except Exception as exc:
+            logger.warning("发送表情包失败: %s", exc)
+            return {"success": False, "error": str(exc)}
 
     # ------------------------------------------------------------------
     # Proactive state persistence

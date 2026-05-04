@@ -11,7 +11,7 @@ class StickerRecord:
     """表情包记录，核心是学习"在什么情境下使用这个表情包"。"""
 
     sticker_id: str          # MD5 哈希（复用 NapCatBridge 的缓存哈希）
-    file_path: str           # 本地路径（image_cache/ 下）
+    file_path: str           # 本地路径（sticker_cache/ 下）
     caption: str             # 来自 cognition.image_caption 的描述（辅助理解）
     # --- 使用情境（核心） ---
     usage_context: str       # 发送时的前文上下文（前3-5条消息摘要）

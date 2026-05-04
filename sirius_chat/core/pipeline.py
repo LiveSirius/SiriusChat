@@ -492,6 +492,25 @@ class PipelineMixin:
             }
 
         self._persist_group_state(group_id)
+
+        # Framework-level sticker decision: fire-and-forget if conditions match
+        if self._should_send_sticker(decision, emotion, intent, group_id):
+            emotion_hint = self._emotion_to_sticker_hint(emotion)
+            recent = self._get_recent_messages(group_id, n=6)
+            context_parts: list[str] = []
+            for msg in recent:
+                speaker = msg.get("speaker", "")
+                content = msg.get("content", "")
+                if speaker and content:
+                    context_parts.append(f"{speaker}: {content}")
+            if message.content:
+                context_parts.append(f"{message.speaker or '用户'}: {message.content}")
+            current_context = "\n".join(context_parts)
+            asyncio.create_task(
+                self._send_sticker_via_bridge(group_id, emotion_hint, current_context)
+            )
+            self._log_inner_thought("这个情境很适合发表情包，我来挑一个～")
+
         return {
             "strategy": decision.strategy.value,
             "reply": None,

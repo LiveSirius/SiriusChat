@@ -110,6 +110,7 @@ class NapCatBridge:
         self._last_not_ready_log: float = 0.0
         self._reply_locks: dict[str, asyncio.Lock] = {}
         self._image_cache_dir = self.work_path / "image_cache"
+        self._sticker_cache_dir = self.work_path / "sticker_cache"
 
         # Bridge 内部状态持久化
         # 旧文件 qq_bridge_config.json 已废弃，adapter 配置统一走 adapters.json
@@ -288,21 +289,15 @@ class NapCatBridge:
                 data = seg.get("data", {})
                 url = data.get("url", "") or data.get("file", "")
                 sub_type = data.get("sub_type", "")
-                LOG.info(
-                    "收到图片消息段: url=%s file=%s sub_type=%s data=%s",
-                    data.get("url", ""),
-                    data.get("file", ""),
-                    sub_type,
-                    data,
-                )
                 if url:
-                    local_path = await self._cache_image(str(url))
                     # sub_type=1 indicates animated sticker/emoji from QQ;
                     # mark it so downstream can skip vision analysis.
                     is_sticker = str(sub_type) == "1"
+                    local_path = await self._cache_image(str(url), is_sticker=is_sticker)
                     mm_item: dict[str, str] = {
                         "type": "image",
                         "value": local_path,
+                        "file_path": local_path,
                     }
                     if is_sticker:
                         mm_item["sub_type"] = "1"
@@ -513,10 +508,11 @@ class NapCatBridge:
 
     # ─── 图片缓存 ─────────────────────────────────────────
 
-    async def _cache_image(self, url: str) -> str:
+    async def _cache_image(self, url: str, *, is_sticker: bool = False) -> str:
         if not url.startswith(("http://", "https://")):
             return url
-        self._image_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir = self._sticker_cache_dir if is_sticker else self._image_cache_dir
+        cache_dir.mkdir(parents=True, exist_ok=True)
         ext = Path(url.split("?")[0]).suffix or ".jpg"
         try:
             timeout = aiohttp.ClientTimeout(total=15)
@@ -535,30 +531,35 @@ class NapCatBridge:
                             LOG.warning("图片过大(%d bytes)，跳过缓存: %s", len(data), url[:80])
                             return url
                         content_hash = hashlib.md5(data).hexdigest()
-                        cache_path = self._image_cache_dir / f"{content_hash}{ext}"
+                        cache_path = cache_dir / f"{content_hash}{ext}"
                         if cache_path.exists():
                             return str(cache_path)
                         cache_path.write_bytes(data)
                         # Preserve original URL metadata
-                        (self._image_cache_dir / f"{content_hash}{ext}.url").write_text(
+                        (cache_dir / f"{content_hash}{ext}.url").write_text(
                             url, encoding="utf-8"
                         )
-                        await self._cleanup_image_cache(max_files=200)
+                        if not is_sticker:
+                            await self._cleanup_cache_dir(cache_dir, max_files=200)
                         return str(cache_path)
         except Exception as exc:
             LOG.warning("图片下载异常: %s | %s", exc, url[:80])
         return url
 
-    async def _cleanup_image_cache(self, max_files: int = 200) -> None:
-        if not self._image_cache_dir.exists():
+    async def _cleanup_cache_dir(self, cache_dir: Path, max_files: int = 200) -> None:
+        if not cache_dir.exists():
             return
-        files = sorted(self._image_cache_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        files = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
         if len(files) > max_files:
             for old_file in files[max_files:]:
                 try:
                     old_file.unlink()
                 except Exception:
                     pass
+
+    async def _cleanup_image_cache(self, max_files: int = 200) -> None:
+        """Backward-compatible wrapper for image cache cleanup."""
+        await self._cleanup_cache_dir(self._image_cache_dir, max_files=max_files)
 
     # ─── 事件等待（供外部向导使用）─────────────────────────
 

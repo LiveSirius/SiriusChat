@@ -1,19 +1,20 @@
 # 表情包 RAG 系统（Sticker RAG System）
 
-> 版本：1.0.0  
-> 作者：Sirius Chat  
+> 版本：1.1.0
+> 作者：Sirius Chat
 > 最后更新：2026-05-04
 
 ---
 
 ## 1. 系统概述
 
-表情包 RAG 系统是 Sirius Chat 框架的**内置 SKILL 扩展**，赋予 AI 人格**自动学习群聊表情包**、**根据语境智能检索**、**按人格偏好发送**的能力。
+表情包 RAG 系统是 Sirius Chat 框架的**内置子系统**，赋予 AI 人格**自动学习群聊表情包**、**根据语境智能检索**、**按人格偏好发送**的能力。
 
 核心设计理念：
 - **观察学习**：AI 像人类一样，通过观察群友在什么情境下发什么表情包来学习
 - **人格化**：不同人格有不同的表情包品味，系统自动维护偏好档案
 - **动态适应**：根据群友反馈不断调整，模拟"喜新厌旧"等人类习惯
+- **框架层决策**：表情包发送时机与选择完全由框架层独立判断，模型无需感知表情包系统存在
 
 ---
 
@@ -27,7 +28,8 @@ flowchart TB
         IV3[IntentAnalysisV3]
         IC[image_caption]
         SL[StickerLearner<br/>自动学习器]
-        SRS[StickerRAGSkill<br/>SKILL 调用]
+        SD[StickerDecision<br/>框架层决策]
+        SI[StickerIndexer<br/>语义索引]
         SFO[StickerFeedbackObserver<br/>反馈观察器]
         SP[StickerPreference<br/>人格偏好档案]
         SVS[StickerVectorStore<br/>ChromaDB 向量存储]
@@ -37,16 +39,17 @@ flowchart TB
     IV3 --> IC
     IC -->|新表情包发现| SL
     SL -->|存入| SVS
-    SRS -->|加载| SP
-    SRS -->|检索| SVS
-    SRS -->|发送后| SFO
+    SD -->|加载| SP
+    SD -->|检索| SI
+    SI -->|查询| SVS
+    SD -->|发送后| SFO
     SFO -->|更新| SP
     SFO -->|更新使用次数| SVS
 
     style Engine fill:#f9f,stroke:#333,stroke-width:2px
     style CA fill:#bbf,stroke:#333
     style SL fill:#bfb,stroke:#333
-    style SRS fill:#fbb,stroke:#333
+    style SD fill:#fbb,stroke:#333
     style SFO fill:#ffb,stroke:#333
 ```
 
@@ -290,34 +293,68 @@ novelty_score = max(0.1, base_decay * usage_decay * time_decay)
 
 ---
 
-## 5. SKILL 接口
+## 5. 框架层决策接口
 
-### 5.1 调用方式
+### 5.1 决策流程
 
-模型在生成回复时，如果判断需要发送表情包，会输出：
+表情包发送完全由框架层在 `_execution` 阶段独立决策，模型无需感知：
 
+```python
+# 1. 判断是否适合发送表情包
+if self._should_send_sticker(decision, emotion, intent, group_id):
+    emotion_hint = self._emotion_to_sticker_hint(emotion)
+    # 2. 构建当前对话上下文
+    current_context = "\n".join(recent_messages)
+    # 3. 异步发送（fire-and-forget）
+    asyncio.create_task(
+        self._send_sticker_via_bridge(group_id, emotion_hint, current_context)
+    )
 ```
-[SKILL_CALL: send_sticker | {"emotion_hint": "sadness"}]
-```
 
-### 5.2 参数
+### 5.2 时机判断规则（`_should_send_sticker`）
 
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| emotion_hint | str | 否 | 情绪倾向（joy/anger/sadness/anxiety/neutral） |
+| 条件 | 行为 |
+|------|------|
+| 私聊（`private_` 前缀） | 不发送 |
+| 策略为 SILENT | 不发送 |
+| sarcasm_score > 0.6 或 entitlement_score < 0.3 | 不发送（避免误读） |
+| 基础概率 15% | 起始概率 |
+| 正向情绪（joy/excitement/surprise 或 valence > 0.3） | +25% |
+| 高唤醒（arousal > 0.6） | +20% |
+| 中等唤醒（arousal > 0.4） | +10% |
+| **上限** | **70%** |
 
-> **注意**：`send_sticker` 不再需要 `query` 参数。系统会自动从当前聊天上下文中构建 `current_context`（最近消息 + 当前消息 + 情绪），然后检索与该情境最匹配的表情包。
+### 5.3 情绪映射（`_emotion_to_sticker_hint`）
 
-### 5.3 返回值
+| 情绪状态 | 映射结果 |
+|----------|----------|
+| basic_emotion 有值 | 转为小写字符串 |
+| valence > 0.3 且 arousal > 0.5 | "joy" |
+| valence < -0.3 | "sadness" |
+| arousal > 0.6 | "anger" |
+| 其他 | "neutral" |
 
-```json
-{
-  "success": true,
-  "sticker_id": "a1b2c3d4...",
-  "file_path": "data/personas/xxx/image_cache/...",
-  "caption": "一只橘猫躺在键盘上...",
-  "tags": ["猫咪", "疲惫", "可爱"]
-}
+### 5.4 发送流程（`_send_sticker_via_bridge`）
+
+```python
+# 1. 加载人格偏好
+preference = preference_manager.load()
+# 2. 检索最匹配的表情包
+record = indexer.search(
+    current_context=current_context,
+    preference=preference,
+    emotion_hint=emotion_hint,
+    top_k=20,
+    similarity_threshold=0.5,
+)
+# 3. 通过 NapCatBridge 发送
+msg = [{"type": "image", "data": {"file": str(file_path), "sub_type": "1"}}]
+await adapter.send_group_msg(group_id, msg)
+# 4. 记录使用并启动反馈观察
+preference_manager.record_usage(record.sticker_id, record.tags, emotion_hint)
+asyncio.create_task(
+    feedback_observer.observe(record.sticker_id, group_id, sent_at, wait_seconds=15.0)
+)
 ```
 
 ---
@@ -328,7 +365,7 @@ novelty_score = max(0.1, base_decay * usage_decay * time_decay)
 
 ```python
 def _init_sticker_system(self) -> None:
-    from sirius_chat.skills.builtin.send_sticker import init_sticker_system
+    from sirius_chat.skills.sticker import init_sticker_system
     self._sticker_system = init_sticker_system(
         work_path=self.work_path,
         persona_name=self.persona.name,
@@ -336,7 +373,8 @@ def _init_sticker_system(self) -> None:
         basic_memory=self.basic_memory,
     )
     # 自动生成偏好（如果不存在）
-    if not pref_manager._file_path.exists():
+    pref_manager = self._sticker_system.get("preference_manager")
+    if pref_manager and not pref_manager._file_path.exists():
         asyncio.create_task(
             pref_manager.generate_from_persona(self.persona, self.provider_async)
         )
@@ -345,6 +383,15 @@ def _init_sticker_system(self) -> None:
 ### 6.2 消息处理（pipeline.py）
 
 ```python
+# _execution 阶段末尾：框架层独立决策表情包
+if self._should_send_sticker(decision, emotion, intent, group_id):
+    emotion_hint = self._emotion_to_sticker_hint(emotion)
+    # ...构建 current_context...
+    asyncio.create_task(
+        self._send_sticker_via_bridge(group_id, emotion_hint, current_context)
+    )
+
+# _background_update：学习新表情包
 def _background_update(self, group_id, message, emotion, intent, user_id):
     # ... 其他更新 ...
     
@@ -417,13 +464,13 @@ sequenceDiagram
     SL-->>Engine: 学习完成
 ```
 
-### 8.2 AI 发送表情包（检索）
+### 8.2 AI 发送表情包（框架层决策）
 
 ```mermaid
 sequenceDiagram
     participant User as 群友B
     participant Engine as EmotionalGroupChatEngine
-    participant SRS as StickerRAGSkill
+    participant SD as StickerDecision
     participant SI as StickerIndexer
     participant SP as StickerPreference
     participant SVS as StickerVectorStore
@@ -431,22 +478,26 @@ sequenceDiagram
     participant SFO as StickerFeedbackObserver
 
     User->>Engine: "今天又要加班，好累啊"
-    Engine->>Engine: 判断需要安慰/共鸣
-    Engine->>SRS: [SKILL_CALL: send_sticker]
-    SRS->>SP: 加载人格偏好
-    SP-->>SRS: preferred_tags, avoided_tags, emotion_tag_map
-    SRS->>SI: search(current_context="群友B: 今天又要加班，好累啊", emotion="sadness")
+    Engine->>Engine: cognition → emotion=sadness, intent=comfort
+    Engine->>Engine: decision → strategy=IMMEDIATE
+    Engine->>SD: _should_send_sticker()?
+    Note over SD: 情绪匹配 + 概率判断
+    SD-->>Engine: True (发送表情包)
+    Engine->>SD: _send_sticker_via_bridge()
+    SD->>SP: 加载人格偏好
+    SP-->>SD: preferred_tags, avoided_tags, emotion_tag_map
+    SD->>SI: search(current_context="群友B: 今天又要加班，好累啊", emotion="sadness")
     SI->>SVS: 向量检索 top_k=40
     SVS-->>SI: 候选列表
     SI->>SI: 关键词检索
     SI->>SI: 多维度评分
     Note over SI: 语义60% + 关键词40%<br/>+ 偏好匹配 + 情绪匹配<br/>+ 新鲜度 - 使用频率惩罚
     SI->>SI: 加权随机选择
-    SI-->>SRS: 选中橘猫表情包
-    SRS->>Bridge: 发送图片
-    Bridge-->>SRS: 发送成功
-    SRS-->>Engine: 返回结果
-    SRS->>SFO: 启动反馈观察（15秒后）
+    SI-->>SD: 选中橘猫表情包
+    SD->>Bridge: 发送图片
+    Bridge-->>SD: 发送成功
+    SD-->>Engine: 返回结果
+    SD->>SFO: 启动反馈观察（15秒后）
     Note over SFO: 15秒后...
     SFO->>Engine: 获取后续消息
     Engine-->>SFO: 群友C: "哈哈太真实了"
