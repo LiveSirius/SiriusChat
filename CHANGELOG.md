@@ -88,6 +88,32 @@
 
 ## [Unreleased]
 
+### Added
+
+- **NapCat 实例自管理**：`PersonaWorker` 在连接 WS 失败时自动安装/启动/等待 NapCat 实例就绪，简化 `main.py` 启动逻辑。
+- **指向性识别新增 `other_mention_score`**：消息 @ 的不是 AI 时强制压低 `directed_score`，避免误将指向他人的消息判定为指向自己。
+- **表情包学习即时展示**：`StickerLearner` 在学习开始前写入 pending 记录，WebUI 可立即展示正在学习的表情包。
+- **远程图片缓存**：`send_image` skill 支持将远程 URL 图片下载到本地后发送，避免重复下载。
+- **表情包 WebUI 扩展**：表情包页面新增"学习中"统计卡片和 pending 状态标识。
+
+### Changed
+
+- **user 消息格式改为 XML**：`_build_sender_line` 从纯文本 `[消息]` 前缀改为 `<message speaker=... user_id=... role=...>` XML 标签，与历史对话格式一致，减少模型误判说话者。
+- **历史对话裁剪**：`_build_history_xml` 排除尾部未回复的 human 消息，避免与 user 角色内容重复。
+- **移除群聊火热对 IMMEDIATE 的降级策略**：`ResponseStrategy.decide()` 不再对 hot/overheated 群聊做 urgency/relevance 分数压制，IMMEDIATE 决策不受热度影响。
+- **IMMEDIATE 防抖窗口优化**：窗口从 8s 改为 5s，窗口期内每收到一条新 IMMEDIATE 消息增加 1s，上限 12s，避免刷屏的同时保持回复及时性。
+- **指向性语言信号拆分**：强信号（name_match、imperative）与弱信号（second_person、question）分开处理，`topic_relevance` 不再计入指向性。
+- **开发者特殊优先级移除**：`ThresholdEngine._relationship_factor` 不再对开发者身份特殊处理，改为由 pipeline 侧的 `relationship_state` 统一管理。
+- **测试配置优化**：`conftest.py` 的 `ram_tmp_path` 优先使用 pytest basetemp 目录，避免 Windows Defender 实时扫描导致测试 I/O 超时。
+
+### Fixed
+
+- **主动消息开关未生效**：`proactive_enabled` 配置项未被引擎读取，导致关闭开关后仍触发主动消息。新增配置检查。
+- **提醒 group_id 注入不完整**：`_inject_group_id_into_latest_reminder` 只为最新一条提醒注入 group_id，链式创建的早期提醒缺失。改为遍历所有提醒。
+- **Bridge 主动消息投递未检查开关**：`NapCatBridge._event_bus_listener` 投递 `PROACTIVE_RESPONSE_TRIGGERED` 事件前未检查 `is_proactive_enabled` 状态。
+- **测试并行兼容性**：`pyproject.toml` 移除 `pytest-xdist` 并行配置（与部分异步测试不兼容），改用 `asyncio_mode=strict`。
+- **测试临时目录优化**：新增 `.pytest_tmp/` 到 `.gitignore`，避免测试临时文件污染仓库。
+
 ### Added (Persona System)
 
 - **`PersonaProfile` 数据模型**：结构化角色人格，覆盖身份、性格、表达、情绪、行为、运行时偏好六大维度。
