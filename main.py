@@ -59,7 +59,7 @@ def _load_global_config() -> dict:
 # ---------------------------------------------------------------------------
 
 async def _cmd_run(args: argparse.Namespace) -> None:
-    """启动所有已启用的人格 + WebUI（可选自动管理 NapCat）。"""
+    """启动所有已启用的人格 + WebUI。NapCat 由人格子进程自动管理。"""
     config = _load_global_config()
     configure_logging(level=config.get("log_level", "INFO"), format_type="console")
     LOG = logging.getLogger("sirius.main")
@@ -69,60 +69,7 @@ async def _cmd_run(args: argparse.Namespace) -> None:
 
     persona_manager = PersonaManager(DATA_DIR, global_config=config)
 
-    # ── NapCat 自动管理（多实例，默认启用）──────────────────
-    napcat_managers: dict[str, Any] = {}
-    from sirius_chat.platforms.napcat_manager import NapCatManager
-    from sirius_chat.persona_config import PersonaAdaptersConfig
-
-    napcat_install_dir = str(config.get("napcat_install_dir", str(REPO_ROOT / "napcat")))
-    global_mgr = NapCatManager(napcat_install_dir)
-
-    # 1. 全局安装（只需要一次）
-    if not global_mgr.is_installed:
-        LOG.info("NapCat 未安装，尝试自动安装...")
-        result = await global_mgr.install()
-        if result["success"]:
-            LOG.info("NapCat 安装成功")
-        else:
-            LOG.warning("NapCat 自动安装失败: %s", result["message"])
-            LOG.warning("请通过 WebUI 手动安装 NapCat")
-
-    # 2. 为每个人格启动独立的 NapCat 实例
-    if global_mgr.is_installed:
-        for info in persona_manager.list_personas():
-            name = info["name"]
-            paths = persona_manager.get_persona_paths(name)
-            if paths is None:
-                continue
-            adapters = PersonaAdaptersConfig.load(paths.adapters)
-            for a in adapters.adapters:
-                if a.type != "napcat" or not a.enabled:
-                    continue
-                qq = getattr(a, "qq_number", "")
-                port = int(a.ws_url.rsplit(":", 1)[-1]) if ":" in a.ws_url else 3001
-                if not qq:
-                    LOG.warning("人格 %s 的 NapCat 未配置 QQ 号，跳过", name)
-                    continue
-
-                instance_mgr = NapCatManager.for_persona(
-                    global_install_dir=napcat_install_dir,
-                    persona_name=name,
-                )
-                LOG.info("配置 NapCat 实例 %s (QQ: %s, 端口: %s)...", name, qq, port)
-                instance_mgr.configure(qq_number=qq, ws_port=port)
-                result = await instance_mgr.start(qq_number=qq)
-                if result["success"]:
-                    LOG.info("NapCat 实例 %s 已启动，等待 WS 就绪...", name)
-                    ready = await instance_mgr.wait_for_ws(port=port, timeout=120.0)
-                    if ready:
-                        LOG.info("NapCat 实例 %s WS 已就绪", name)
-                    else:
-                        LOG.warning("NapCat 实例 %s WS 未就绪，请检查 QQ 是否已扫码登录", name)
-                    napcat_managers[name] = instance_mgr
-                else:
-                    LOG.warning("NapCat 实例 %s 启动失败: %s", name, result["message"])
-
-    # ── 启动所有已启用人格 ────────────────────────────────
+    # ── 启动所有已启用人格（worker 子进程会自动管理 NapCat 实例）──
     LOG.info("正在启动已启用人格...")
     results = persona_manager.start_all()
     for name, ok in results.items():
@@ -130,6 +77,7 @@ async def _cmd_run(args: argparse.Namespace) -> None:
 
     # ── 启动 WebUI ────────────────────────────────────────
     napcat_dir = config.get("napcat_install_dir")
+    from sirius_chat.platforms.napcat_manager import NapCatManager
     napcat_mgr = NapCatManager(napcat_dir) if napcat_dir else None
     webui = WebUIServer(
         persona_manager=persona_manager,
@@ -150,10 +98,6 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         LOG.info("正在停止所有人格...")
         persona_manager.stop_all()
         await webui.stop()
-        for name, mgr in napcat_managers.items():
-            if mgr.is_running:
-                LOG.info("正在停止 NapCat 实例 %s...", name)
-                await mgr.stop()
         LOG.info("所有服务已停止")
 
 

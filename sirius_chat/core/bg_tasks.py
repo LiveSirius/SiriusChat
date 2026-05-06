@@ -126,6 +126,8 @@ class BackgroundTasksMixin:
         interval = self.config.get("proactive_check_interval_seconds", 60)
         while self._bg_running:
             await asyncio.sleep(interval)
+            if not self.config.get("proactive_enabled", True):
+                continue
             for group_id in list(self._group_last_message_at.keys()):
                 try:
                     result = await self.proactive_check(group_id)
@@ -619,7 +621,7 @@ class BackgroundTasksMixin:
         return matched
 
     def _inject_group_id_into_latest_reminder(self, group_id: str) -> None:
-        """Attach group_id and adapter_type to the most recently created reminder."""
+        """Attach group_id and adapter_type to reminders that lack them."""
         if self._skill_executor is None:
             return
         try:
@@ -627,20 +629,14 @@ class BackgroundTasksMixin:
             reminders = list(store.get("reminders", []))
             if not reminders:
                 return
-            # Find the reminder with the latest created_at
-            latest = max(
-                reminders,
-                key=lambda r: datetime.fromisoformat(
-                    str(r.get("created_at", "1970-01-01T00:00:00+00:00")).replace("Z", "+00:00")
-                ),
-            )
             updated = False
-            if "group_id" not in latest:
-                latest["group_id"] = group_id
-                updated = True
-            if "adapter_type" not in latest:
-                latest["adapter_type"] = self._current_adapter_type
-                updated = True
+            for r in reminders:
+                if "group_id" not in r:
+                    r["group_id"] = group_id
+                    updated = True
+                if "adapter_type" not in r:
+                    r["adapter_type"] = self._current_adapter_type
+                    updated = True
             if updated:
                 store.set("reminders", reminders)
                 store.save()
