@@ -453,6 +453,7 @@ class PipelineMixin:
                 adapter_type=message.adapter_type,
                 heat_level=rhythm.heat_level,
                 pace=rhythm.pace,
+                speaker_name=message.speaker or "",
             )
             self._persist_group_state(group_id)
             return {
@@ -478,6 +479,7 @@ class PipelineMixin:
                 adapter_type=message.adapter_type,
                 heat_level=rhythm.heat_level,
                 pace=rhythm.pace,
+                speaker_name=message.speaker or "",
             )
             self._persist_group_state(group_id)
             return {

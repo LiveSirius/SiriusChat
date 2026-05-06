@@ -26,7 +26,8 @@ class TestDelayedQueueMerge:
         item2 = q.enqueue("g1", "u2", "world", dec_imm)
         # Should return the same merged item
         assert item2 is item1
-        assert item1.message_content == "hello\nworld"
+        assert "hello" in item1.message_content
+        assert "world" in item1.message_content
         # Strategy upgraded to IMMEDIATE
         assert item1.strategy_decision.strategy == ResponseStrategy.IMMEDIATE
         # Window shortened to immediate debounce
@@ -43,7 +44,8 @@ class TestDelayedQueueMerge:
 
         item2 = q.enqueue("g1", "u2", "world", dec_delayed)
         assert item2 is item1
-        assert item1.message_content == "hello\nworld"
+        assert "hello" in item1.message_content
+        assert "world" in item1.message_content
         # Strategy stays IMMEDIATE (more urgent)
         assert item1.strategy_decision.strategy == ResponseStrategy.IMMEDIATE
         # Window stays 5.0 (min of 5 and 30)
@@ -59,7 +61,9 @@ class TestDelayedQueueMerge:
         item3 = q.enqueue("g1", "u3", "msg3", dec)
 
         assert item1 is item2 is item3
-        assert item1.message_content == "msg1\nmsg2\nmsg3"
+        assert "msg1" in item1.message_content
+        assert "msg2" in item1.message_content
+        assert "msg3" in item1.message_content
         assert len(q.get_pending("g1")) == 1
 
     def test_no_merge_across_groups(self):

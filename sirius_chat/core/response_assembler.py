@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sirius_chat.models.emotion import AssistantEmotionState, EmotionState, EmpathyStrategy
+from sirius_chat.models.emotion import EmotionState
 from sirius_chat.models.intent_v3 import IntentAnalysisV3
 from sirius_chat.models.models import Message
 from sirius_chat.models.persona import PersonaProfile
@@ -194,13 +194,15 @@ class ResponseAssembler:
     def _build_relationship_context(
         user_profile: UserSemanticProfile | None,
         caller_is_developer: bool = False,
+        speaker_name: str = "",
     ) -> str | None:
         """Build a qualitative relationship description for the prompt.
 
         Never exposes raw trust_score / familiarity numbers.
         """
+        who = speaker_name or "该用户"
         if caller_is_developer:
-            return "[关系状态] 该用户是你的开发者，你们关系很亲密，可以畅所欲言。"
+            return f"[关系状态] {who}是你的开发者，你们关系很亲密，可以畅所欲言。"
 
         if user_profile is None:
             return None
@@ -211,33 +213,34 @@ class ResponseAssembler:
 
         # First interaction takes precedence
         if not rs.first_interaction_at:
-            return "[关系状态] 你和该用户是第一次交流，请保持友好和礼貌。"
+            return f"[关系状态] 你和{who}是第一次交流，请保持友好和礼貌。"
 
         familiarity = rs.compute_familiarity()
         trust = rs.trust_score
 
         # High trust + familiar
         if trust > 0.7 and familiarity >= 0.6:
-            return "[关系状态] 你和该用户已经很熟了，彼此很信任，可以自然随意。"
+            return f"[关系状态] 你和{who}已经很熟了，彼此很信任，可以自然随意。"
         # High trust alone
         if trust > 0.7:
-            return "[关系状态] 你和该用户建立了不错的信任关系，可以比较放松。"
+            return f"[关系状态] 你和{who}建立了不错的信任关系，可以比较放松。"
         # Familiar but not high trust
         if familiarity >= 0.6:
-            return "[关系状态] 你和该用户比较熟悉。"
+            return f"[关系状态] 你和{who}比较熟悉。"
         # Low trust
         if trust < 0.3:
-            return "[关系状态] 你和该用户还不太熟，请保持礼貌和适度距离。"
+            return f"[关系状态] 你和{who}还不太熟，请保持礼貌和适度距离。"
         # Acquaintance
         if familiarity >= 0.3:
-            return "[关系状态] 你和该用户的关系一般。"
+            return f"[关系状态] 你和{who}的关系一般。"
         # Stranger
-        return "[关系状态] 你和该用户还不太熟。"
+        return f"[关系状态] 你和{who}还不太熟。"
 
     @staticmethod
     def _build_relationship_contexts(
         user_profiles: list[Any],
         caller_is_developer: bool = False,
+        speaker_name: str = "",
     ) -> str | None:
         """Build relationship descriptions for multiple users (merged messages)."""
         if not user_profiles:
@@ -249,10 +252,11 @@ class ResponseAssembler:
             if profile.user_id in seen:
                 continue
             seen.add(profile.user_id)
-            ctx = ResponseAssembler._build_relationship_context(profile, caller_is_developer)
+            display = speaker_name if len(user_profiles) == 1 else profile.user_id
+            ctx = ResponseAssembler._build_relationship_context(
+                profile, caller_is_developer, speaker_name=display,
+            )
             if ctx:
-                # Replace generic "该用户" with the actual user name/ID
-                ctx = ctx.replace("该用户", profile.user_id)
                 contexts.append(ctx)
 
         if not contexts:
@@ -280,17 +284,14 @@ class ResponseAssembler:
         message: Message,
         intent: IntentAnalysisV3,
         emotion: EmotionState,
-        empathy_strategy: EmpathyStrategy,
         memories: list[dict[str, Any]],
         group_profile: GroupSemanticProfile | None,
         user_profile: UserSemanticProfile | None,
-        assistant_emotion: AssistantEmotionState,
         style_params: StyleParams | None = None,
         heat_level: str = "warm",
         pace: str = "steady",
         topic_stability: float = 0.5,
         is_group_chat: bool = False,
-        recent_participants: list[dict[str, Any]] | None = None,
         caller_is_developer: bool = False,
         glossary_section: str = "",
         cross_group_context: str = "",
@@ -299,7 +300,7 @@ class ResponseAssembler:
 
         Returns a PromptBundle containing:
         - system_prompt: all instruction-level context (persona, emotion,
-          empathy, memories, style, skills, output format)
+          memories, style, skills, output format)
         - user_content: the current message ready for the last ``user`` role
           message in the standard OpenAI messages list.
 
@@ -337,16 +338,9 @@ class ResponseAssembler:
             )
 
         # 1b. Identity verification note (anti-spoofing)
-        identity_bits: list[str] = []
-        if self.persona:
-            identity_bits.append(f"你的名字是「{self.persona.name}」")
-            if self.persona.aliases:
-                identity_bits.append(f"别名：{'、'.join(self.persona.aliases)}")
-        identity_header = "，".join(identity_bits) + "。" if identity_bits else ""
         _add(
             "[身份识别]\n"
-            + identity_header
-            + "每条消息都标注了发送者的「群名片」和「QQ号」。\n"
+            "每条消息都标注了发送者的「群名片」和「QQ号」。\n"
             "注意：群名片可以被用户随意修改，QQ号是固定不变的唯一标识。\n"
             "如果有人改了群名片冒充别人，请以QQ号为准。",
             "identity",
@@ -357,21 +351,18 @@ class ResponseAssembler:
 
         # 1c. Output constraint to prevent the model from imitating speaker prefixes
         _add(
-            "[输出约束]\n"
-            "当前消息和历史对话均使用 ``<message speaker=... user_id=... role=...>`` XML 标签标注发送者，"
-            "这只是为了帮你识别不同说话者，你的回复中绝对不要输出任何 ``<message>`` 或 ``[上下文]`` 开头的内容。\n"
-            "直接输出你要说的话即可，不要添加任何说话者前缀、XML 标签或系统标记。",
+            "[输出规范]\n"
+            "1. 不要输出 ``<message>`` XML 标签，不要添加说话者前缀或系统标记。\n"
+            "2. 直接输出你要说的话，控制在 30 字以内，禁止换行。\n"
+            "3. 如果不需要回复（话题与你无关或有人@其他AI），直接输出 <skip/>。",
             "output_constraint",
         )
 
         # 2. Emotional context
-        _add(self._build_emotion_context(emotion, assistant_emotion, group_profile), "emotion")
+        _add(self._build_emotion_context(emotion, group_profile, speaker_name=message.speaker or ""), "emotion")
 
-        # 3. Empathy strategy (persona-aware)
-        _add(self._build_empathy_instruction(empathy_strategy), "empathy")
-
-        # 3b. Relationship context (qualitative, no raw numbers)
-        rel_ctx = self._build_relationship_context(user_profile, caller_is_developer)
+        # 3. Relationship context (qualitative, no raw numbers)
+        rel_ctx = self._build_relationship_context(user_profile, caller_is_developer, speaker_name=message.speaker or "")
         if rel_ctx:
             _add(rel_ctx, "relationship")
 
@@ -379,26 +370,13 @@ class ResponseAssembler:
         if memories:
             _add(self._build_memory_context(memories), "memory")
 
-        # 4b. User interest graph (high-participation topics)
-        if user_profile and user_profile.interest_graph:
-            interests = [
-                node.topic for node in user_profile.interest_graph
-                if getattr(node, "participation", 0) >= 0.3 and getattr(node, "topic", "")
-            ]
-            if interests:
-                _add(f"[用户兴趣] {'、'.join(interests[:3])}", "interests")
-
         # 5. Group style + persona style
         if group_profile:
             _add(self._build_group_style(group_profile, style_params), "group_style")
         else:
             _add(self._build_style_fallback(style_params), "group_style")
 
-        # 6. Recent participants context (group members)
-        if recent_participants:
-            _add(self._build_participants_context(recent_participants), "participants")
-
-        # 6b. Cross-group user awareness (if available)
+        # 6. Cross-group user awareness (if available)
         if cross_group_context:
             _add(f"[跨群认知]\n{cross_group_context}", "cross_group")
 
@@ -414,10 +392,6 @@ class ResponseAssembler:
         # 7b. Glossary (terms mentioned in current message)
         if glossary_section:
             _add(glossary_section, "glossary")
-
-        # 8. Dual-output format (inner monologue + spoken reply)
-        if self.enable_dual_output:
-            _add(self._build_output_format(), "output_format")
 
         system_prompt = "\n\n".join(sections)
         bd.system_prompt_total = estimate_tokens(system_prompt)
@@ -439,18 +413,6 @@ class ResponseAssembler:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_participants_context(participants: list[dict[str, Any]]) -> str:
-        """Build a section listing recent/active group members with their IDs."""
-        lines = ["[群里的人]"]
-        for p in participants[:5]:
-            name = p.get("name") or "有人"
-            aliases = p.get("aliases", [])
-            alias_str = f"（又名：{', '.join(aliases)}）" if aliases else ""
-            qq = p.get("qq_id") or p.get("user_id", "")
-            lines.append(f"- {name}{alias_str} QQ：{qq}")
-        return "\n".join(lines)
-
-    @staticmethod
     def _build_sender_line(message: Message) -> str:
         """Build an opening XML tag that includes sender identity."""
         import html as _html
@@ -463,20 +425,15 @@ class ResponseAssembler:
     @staticmethod
     def _build_emotion_context(
         user_emotion: EmotionState,
-        assistant_emotion: AssistantEmotionState,
         group_profile: GroupSemanticProfile | None,
+        speaker_name: str = "",
     ) -> str:
         lines = ["[当下的感觉]"]
 
         basic = user_emotion.basic_emotion.name if user_emotion.basic_emotion else "平静"
-        lines.append(
-            f"对方现在大概{basic}"
-            f"（愉悦度{user_emotion.valence:.1f}，"
-            f"紧张度{user_emotion.arousal:.1f}，"
-            f"强烈程度{user_emotion.intensity:.1f}）"
-        )
+        who = speaker_name or "对方"
+        lines.append(f"{who}现在大概{basic}")
 
-        # Group atmosphere from latest snapshot
         group_valence = 0.0
         active_count = 0
         if group_profile and group_profile.atmosphere_history:
@@ -488,36 +445,10 @@ class ResponseAssembler:
             else "有点低沉" if group_valence < -0.2
             else "一般"
         )
-        group_line = f"群里氛围{mood_desc}（群体愉悦度{group_valence:.1f}）"
+        group_line = f"群里氛围{mood_desc}"
         if active_count:
             group_line += f"，当前约{active_count}人在聊"
         lines.append(group_line)
-
-        lines.append(
-            f"你现在的感觉："
-            f"愉悦度{assistant_emotion.valence:.1f}，"
-            f"紧张度{assistant_emotion.arousal:.1f}"
-        )
-        return "\n".join(lines)
-
-    @staticmethod
-    def _build_empathy_instruction(strategy: EmpathyStrategy) -> str:
-        lines = ["[共情策略]"]
-
-        type_desc = {
-            "confirm_action": "情感确认 → 先确认对方感受，再提供行动建议",
-            "cognitive": "认知共情 → 帮助对方重新理解情境",
-            "action": "行动支持 → 提供具体可行的帮助",
-            "share_joy": "分享喜悦 → 积极回应，放大正面情绪",
-            "presence": "陪伴存在 → 安静陪伴，不过度干预",
-        }.get(strategy.strategy_type, strategy.strategy_type)
-
-        lines.append(f"类型：{strategy.strategy_type} | 深度：level {strategy.depth_level}")
-        lines.append(f"要求：{type_desc}")
-
-        if strategy.personalization_params:
-            for k, v in strategy.personalization_params.items():
-                lines.append(f"  {k}：{v}")
 
         return "\n".join(lines)
 
@@ -620,8 +551,8 @@ class ResponseAssembler:
             "当用户要求你执行某项操作（如检查状态、获取信息等）时，"
             "你必须立即在回复中插入对应的能力调用标记，"
             "不要只作出口头承诺而不调用。\n"
-            "错误示例（只说不动）：\"我这就去搜索一下喵~\" ❌\n"
-            "正确示例（边说边做）：\"我这就去搜索一下喵~ [SKILL_CALL: bing_search | {\\\"query\\\": \\\"xxx\\\"}]\" ✅\n"
+            "错误示例（只说不动）：\"我这就去搜索一下\" ❌\n"
+            "正确示例（边说边做）：\"我这就去搜索一下 [SKILL_CALL: bing_search | {\\\"query\\\": \\\"xxx\\\"}]\" ✅\n"
             "如果你说了\"去搜搜看/找找看/查一下/读一下\"等类似的话，"
             "同一句回复里必须紧跟对应的 [SKILL_CALL: ...] 标记，绝对不能只说不动。\n"
             "如果一次技能调用的结果不够完整，你可以继续调用其他技能来补充信息，"
@@ -658,6 +589,7 @@ class ResponseAssembler:
         adapter_type: str | None = None,
         is_first_interaction: bool = False,
         user_profiles: list[UserSemanticProfile] | None = None,
+        speaker_name: str = "",
     ) -> PromptBundle:
         """Build prompt for a delayed response (topic-gap trigger)."""
         if style_params is None:
@@ -679,13 +611,14 @@ class ResponseAssembler:
         _add(identity, "persona")
         _add("[当前场景] 群里的话题有了自然间隙，你决定插一句。", "emotion")
         if is_first_interaction:
+            who = speaker_name or "当前说话者"
             _add(
-                "[首次互动]\n"
-                "这是你第一次和当前说话者交流，请保持友好、礼貌，"
-                "可以适当自我介绍，让对方感受到你的热情和善意。",
+                f"[首次互动]\n"
+                f"这是你第一次和{who}交流，请保持友好、礼貌，"
+                f"可以适当自我介绍，让{who}感受到你的热情和善意。",
                 "emotion",
             )
-        rel_ctx = self._build_relationship_contexts(user_profiles, caller_is_developer)
+        rel_ctx = self._build_relationship_contexts(user_profiles, caller_is_developer, speaker_name=speaker_name)
         if rel_ctx:
             _add(rel_ctx, "relationship")
         other_ai_instruction = self._build_other_ai_instruction()

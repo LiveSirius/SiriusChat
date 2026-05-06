@@ -71,12 +71,11 @@ class PromptBuildersMixin:
             items = [items]
         if len(items) == 1:
             message_content = items[0].message_content
+            speaker_name = items[0].speaker_name
         else:
-            # Merge multiple messages into a single context
-            lines = ["以下是你之前决定稍后回复的几条消息："]
-            for idx, item in enumerate(items, 1):
-                lines.append(f"{idx}. {item.message_content}")
-            message_content = "\n".join(lines)
+            parts = [item.message_content for item in items]
+            message_content = "\n".join(parts)
+            speaker_name = items[-1].speaker_name
         glossary = self.glossary_manager.build_prompt_section(
             group_id, text=message_content, max_terms=5
         )
@@ -101,6 +100,7 @@ class PromptBuildersMixin:
             adapter_type=adapter_type,
             is_first_interaction=is_first_interaction,
             user_profiles=delayed_user_profiles,
+            speaker_name=speaker_name,
         )
         return bundle
 

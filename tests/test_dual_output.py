@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from sirius_chat.core.response_assembler import ResponseAssembler
-from sirius_chat.models.emotion import AssistantEmotionState, EmotionState, EmpathyStrategy
+from sirius_chat.models.emotion import EmotionState
 from sirius_chat.models.models import Message
 from unittest.mock import Mock
 
@@ -31,31 +31,27 @@ class TestParseDualOutput:
 
 
 class TestAssemblerDualOutputFlag:
-    def test_prompt_contains_format_when_enabled(self):
-        assembler = ResponseAssembler(enable_dual_output=True)
+    def test_prompt_contains_output_spec(self):
+        assembler = ResponseAssembler()
         bundle = assembler.assemble(
             message=Message(role="human", content="你好"),
             intent=Mock(),
             emotion=EmotionState(),
-            empathy_strategy=EmpathyStrategy(strategy_type="presence", priority=3, depth_level=1),
             memories=[],
             group_profile=None,
             user_profile=None,
-            assistant_emotion=AssistantEmotionState(),
         )
-        assert "输出格式" in bundle.system_prompt
+        assert "输出规范" in bundle.system_prompt
         assert "直接输出" in bundle.system_prompt
 
-    def test_prompt_omits_format_when_disabled(self):
+    def test_prompt_always_has_output_spec(self):
         assembler = ResponseAssembler(enable_dual_output=False)
         bundle = assembler.assemble(
             message=Message(role="human", content="你好"),
             intent=Mock(),
             emotion=EmotionState(),
-            empathy_strategy=EmpathyStrategy(strategy_type="presence", priority=3, depth_level=1),
             memories=[],
             group_profile=None,
             user_profile=None,
-            assistant_emotion=AssistantEmotionState(),
         )
-        assert "输出格式" not in bundle.system_prompt
+        assert "输出规范" in bundle.system_prompt

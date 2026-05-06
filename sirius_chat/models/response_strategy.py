@@ -40,6 +40,7 @@ class DelayedResponseItem:
     channel: str | None = None
     channel_user_id: str | None = None
     message_content: str = ""
+    speaker_name: str = ""
     strategy_decision: StrategyDecision = field(default_factory=StrategyDecision)
     emotion_state: dict[str, Any] = field(default_factory=dict)
     candidate_memories: list[str] = field(default_factory=list)

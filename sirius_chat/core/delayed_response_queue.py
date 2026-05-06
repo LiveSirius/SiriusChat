@@ -74,6 +74,7 @@ class DelayedResponseQueue:
         adapter_type: str | None = None,
         heat_level: str = "warm",
         pace: str = "steady",
+        speaker_name: str = "",
     ) -> DelayedResponseItem:
         """Add an item to the delayed queue.
 
@@ -82,6 +83,15 @@ class DelayedResponseQueue:
         message extends the window by 1 second (capped at 12s).
         """
         from sirius_chat.core.utils import now_iso
+        import html as _html
+
+        def _tag_content(content: str, sp: str, uid: str) -> str:
+            safe_sp = _html.escape(sp or "有人", quote=True)
+            safe_uid = _html.escape(uid or "", quote=True)
+            return (
+                f'<message speaker="{safe_sp}" user_id="{safe_uid}" role="user">'
+                f"\n{content}\n</message>"
+            )
 
         # Debounce: merge with any existing pending item in the same group.
         # This prevents multiple independent replies during high-frequency
@@ -90,7 +100,7 @@ class DelayedResponseQueue:
         queue = self._queues.get(group_id, [])
         for item in queue:
             if item.status == "pending":
-                item.message_content += f"\n{message_content}"
+                item.message_content += f"\n{_tag_content(message_content, speaker_name, channel_user_id or '')}"
                 if strategy_decision.strategy == ResponseStrategy.IMMEDIATE:
                     if item.strategy_decision.strategy == ResponseStrategy.IMMEDIATE:
                         item.window_seconds = min(
@@ -129,13 +139,15 @@ class DelayedResponseQueue:
                 )
                 return item
 
+        tagged_content = _tag_content(message_content, speaker_name, channel_user_id or "")
         item = DelayedResponseItem(
             item_id=f"dri_{uuid.uuid4().hex[:12]}",
             group_id=group_id,
             user_id=user_id,
             channel=channel,
             channel_user_id=channel_user_id,
-            message_content=message_content,
+            message_content=tagged_content,
+            speaker_name=speaker_name,
             strategy_decision=strategy_decision,
             emotion_state=dict(emotion_state or {}),
             candidate_memories=list(candidate_memories or []),
