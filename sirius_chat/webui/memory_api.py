@@ -549,6 +549,7 @@ async def api_persona_stickers_get(request: web.Request, persona_manager: Any) -
     tags_counter: dict[str, int] = {}
     total_usage = 0
     generalized_count = 0
+    learning_count = 0
 
     if records_dir.exists():
         for path in records_dir.glob("*.json"):
@@ -558,6 +559,8 @@ async def api_persona_stickers_get(request: web.Request, persona_manager: Any) -
                 data.pop("usage_context_embedding", None)
                 data.pop("caption_embedding", None)
                 data.pop("scene_summary_embedding", None)
+                if data.get("learning_status") == "pending":
+                    learning_count += 1
                 records.append(data)
                 if data.get("source_group"):
                     groups.add(data["source_group"])
@@ -591,6 +594,7 @@ async def api_persona_stickers_get(request: web.Request, persona_manager: Any) -
         "total_usage": total_usage,
         "top_tags": sorted(tags_counter.items(), key=lambda x: x[1], reverse=True)[:10],
         "generalized_count": generalized_count,
+        "learning_count": learning_count,
     }
 
     return _json_response({

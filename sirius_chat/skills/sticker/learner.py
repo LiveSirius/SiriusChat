@@ -108,6 +108,11 @@ class StickerLearner:
         usage_context = self._build_usage_context(source_group, trigger_message, source_user)
         logger.info("表情包学习: sticker_id=%s 使用情境构建完成, length=%d", sticker_id, len(usage_context))
 
+        self._write_pending_record(
+            sticker_id, file_path, caption, usage_context,
+            trigger_message, trigger_emotion, source_user, source_group,
+        )
+
         # 生成标签（基于使用情境而非图片描述）
         tags = await self._generate_tags(usage_context, trigger_message, source_user, trigger_emotion)
         logger.info("表情包学习: sticker_id=%s 标签生成完成, tags=%s", sticker_id, tags)
@@ -145,7 +150,48 @@ class StickerLearner:
         # 检查是否触发场景概括学习
         await self._maybe_generalize_scene(sticker_id)
 
+        self._indexer.save_to_disk()
+
         return record
+
+    def _write_pending_record(
+        self,
+        sticker_id: str,
+        file_path: str,
+        caption: str,
+        usage_context: str,
+        trigger_message: str,
+        trigger_emotion: str,
+        source_user: str,
+        source_group: str,
+    ) -> None:
+        """在学习开始前写入 pending 记录，使 WebUI 可立即展示。"""
+        records_dir = self._indexer._work_path / "records"
+        records_dir.mkdir(parents=True, exist_ok=True)
+        pending_path = records_dir / f"{sticker_id}.json"
+        if pending_path.exists():
+            return
+        data = {
+            "sticker_id": sticker_id,
+            "file_path": file_path,
+            "caption": caption,
+            "usage_context": usage_context,
+            "trigger_message": trigger_message,
+            "trigger_emotion": trigger_emotion,
+            "source_user": source_user,
+            "source_group": source_group,
+            "discovered_at": datetime.now(timezone.utc).isoformat(),
+            "tags": [],
+            "learning_status": "pending",
+        }
+        try:
+            pending_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info("表情包 pending 记录已写入: %s", sticker_id)
+        except Exception as exc:
+            logger.debug("写入 pending 记录失败: %s | %s", exc, sticker_id)
 
     async def _maybe_generalize_scene(self, sticker_id: str) -> None:
         """检查是否应该触发场景概括学习。
@@ -259,6 +305,8 @@ class StickerLearner:
                 record.scene_summary = summary
                 record.scene_summary_embedding = scene_embedding
                 record.scene_generalize_count = new_count
+
+            self._indexer.save_to_disk()
 
             logger.info(
                 "表情包场景概括完成: sticker_id=%s 第%d次概括 | summary=%.50s...",
@@ -446,5 +494,6 @@ class StickerLearner:
             records.append(record)
 
         if records:
+            self._indexer.save_to_disk()
             logger.info("批量学习 %d 个表情包", len(records))
         return records

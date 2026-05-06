@@ -1107,6 +1107,7 @@ async function loadStickers() {
     const vs = data.vector_store || {};
     $('ssVector').textContent = vs.available ? `${vs.total_entries} 条` : '未启用';
     $('ssGeneralized').textContent = stats.generalized_count || 0;
+    $('ssLearning').textContent = stats.learning_count || 0;
 
     // 偏好信息
     const pref = data.preference || {};
@@ -1198,8 +1199,12 @@ function renderStickerList(records) {
     const sceneBadge = sceneCount > 0
       ? `<span class="tag" style="background:var(--accent);color:#fff;border-color:var(--accent)">场景概括 ${sceneCount}/3</span>`
       : '';
+    const isPending = r.learning_status === 'pending';
+    const learningBadge = isPending
+      ? '<span class="tag" style="background:var(--warning,#e6a700);color:#fff;border-color:var(--warning,#e6a700)">⏳ 学习中</span>'
+      : '';
     return `
-      <div class="sticker-item" style="display:flex;gap:12px;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:pointer;align-items:flex-start"
+      <div class="sticker-item" style="display:flex;gap:12px;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:pointer;align-items:flex-start;${isPending ? 'opacity:0.7' : ''}"
            onclick="openStickerDetail('${r.sticker_id}')"
            title="使用情境：${contextPreview}...">
         <div style="width:64px;height:64px;background:var(--surface-2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:28px"
@@ -1212,7 +1217,7 @@ function renderStickerList(records) {
           <div style="font-size:12px;color:var(--text-2);margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
             情境：${contextPreview}...
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:4px">${sceneBadge}${tags}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">${learningBadge}${sceneBadge}${tags}</div>
         </div>
       </div>
     `;
@@ -1233,20 +1238,25 @@ async function openStickerDetail(stickerId) {
     const sceneHtml = sceneSummary
       ? `<div><strong>场景概括：</strong><pre style="background:var(--surface-2);padding:8px;border-radius:6px;white-space:pre-wrap;margin:4px 0;border-left:3px solid var(--accent)">${sceneSummary}</pre></div>`
       : '<div><strong>场景概括：</strong><span style="color:var(--text-2)">尚未生成（需累积 8 次观察）</span></div>';
+    const isPending = r.learning_status === 'pending';
+    const pendingBanner = isPending
+      ? '<div style="background:var(--warning,#e6a700);color:#fff;padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:13px">⏳ 正在学习中，标签和详细信息即将更新...</div>'
+      : '';
     $('stickerDetailBody').innerHTML = `
+      ${pendingBanner}
       <div style="display:grid;gap:10px;font-size:13px">
         <div><strong>ID：</strong><code>${r.sticker_id}</code></div>
         <div><strong>图片描述：</strong>${r.caption || '无'}</div>
-        ${sceneHtml}
-        <div><strong>场景概括次数：</strong>${sceneCount} / 3</div>
+        ${isPending ? '' : sceneHtml}
+        ${isPending ? '' : `<div><strong>场景概括次数：</strong>${sceneCount} / 3</div>`}
         <div><strong>使用情境：</strong><pre style="background:var(--surface-2);padding:8px;border-radius:6px;white-space:pre-wrap;margin:4px 0">${r.usage_context || '无'}</pre></div>
         <div><strong>触发消息：</strong>${r.trigger_message || '无'}</div>
         <div><strong>触发情绪：</strong>${r.trigger_emotion || '无'}</div>
         <div><strong>来源用户：</strong>${r.source_user || '未知'}</div>
         <div><strong>来源群聊：</strong>${r.source_group || '未知'}</div>
         <div><strong>发现时间：</strong>${r.discovered_at || '未知'}</div>
-        <div><strong>使用次数：</strong>${r.usage_count || 0}</div>
-        <div><strong>新鲜度：</strong>${((r.novelty_score || 1) * 100).toFixed(0)}%</div>
+        ${isPending ? '' : `<div><strong>使用次数：</strong>${r.usage_count || 0}</div>`}
+        ${isPending ? '' : `<div><strong>新鲜度：</strong>${((r.novelty_score || 1) * 100).toFixed(0)}%</div>`}
         <div><strong>标签：</strong>${tags}</div>
       </div>
     `;

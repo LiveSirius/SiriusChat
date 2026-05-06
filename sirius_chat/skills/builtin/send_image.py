@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
+
+LOG = logging.getLogger(__name__)
 
 SKILL_META = {
     "name": "send_image",
@@ -78,6 +81,17 @@ async def run(
         p = Path(image_path)
         if p.exists():
             image_path = str(p.resolve())
+
+    if image_path.startswith(("http://", "https://")):
+        cache_fn = getattr(bridge, "_cache_image", None)
+        if cache_fn is not None:
+            try:
+                local_path = await cache_fn(image_path)
+                if local_path and not local_path.startswith(("http://", "https://")):
+                    image_path = local_path
+                    LOG.info("远程图片已缓存到本地: %s", local_path)
+            except Exception as exc:
+                LOG.warning("远程图片缓存失败，直接使用原始 URL: %s | %s", exc, image_path[:80])
 
     msg: list[dict[str, Any]] = []
     image_data: dict[str, Any] = {"file": image_path}
