@@ -142,7 +142,7 @@ connect()
 | `_on_group_message(event)` | 群消息事件处理：白名单检查、渲染 prompt、调用引擎 |
 | `_on_private_message(event)` | 私聊消息事件处理 |
 | `_process_message(group_id, user_id, prompt, event)` | 核心处理：构造 `Participant` + `Message` → `runtime.engine.process_message()` → 发送回复 |
-| `_background_delivery_loop()` | 每 3 秒：延迟队列 tick、主动发言检查、开发者私聊、提醒投递 |
+| `_event_bus_listener()` | 订阅引擎事件总线，分发主动发言、延迟回复、开发者私聊、提醒等事件 |
 | `_render_group_prompt(event)` | 将 OneBot segment（text/at/image）渲染为纯文本 prompt |
 | `_cache_image(url)` | 下载图片到 `image_cache/`（MD5 内容哈希命名），上限 200 张，单张上限 10MB |
 | `_send_group_text_raw(group_id, text)` | 带 `asyncio.Lock` 的群消息发送（防止消息交错） |
@@ -226,6 +226,20 @@ async for event in self.runtime.engine.event_bus.subscribe():
     ├── _setup_skill_runtime() → SkillRegistry + SkillExecutor
     └── engine.start_background_tasks()
 ```
+
+---
+
+## PersonaWorker NapCat 自动管理
+
+`PersonaWorker` 在启动 adapter 时自动管理 NapCat 实例的生命周期（`_ensure_napcat_running`）：
+
+1. **端口探测**：通过 TCP 探测目标 WS 端口是否可达
+2. **自动安装**：若 NapCat 未安装，从 GitHub Release 自动下载并解压
+3. **自动配置**：根据 adapter 配置中的 `qq_number` 和 `ws_port` 生成 NapCat 配置
+4. **自动启动**：`CREATE_NEW_CONSOLE` 启动 NapCat 实例
+5. **等待就绪**：最多等待 180 秒，通过 WS 握手确认实例就绪
+
+若自动管理失败，该 adapter 会被跳过并记录错误日志，不影响其他人格。
 
 ---
 

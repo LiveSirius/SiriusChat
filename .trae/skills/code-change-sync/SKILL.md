@@ -56,8 +56,9 @@ sirius_chat/
 │   ├── engine_core.py       # _EmotionalGroupChatEngineBase 基类（__init__、API、持久化）
 │   ├── pipeline.py          # PipelineMixin（5 阶段管线：感知→认知→决策→执行→后台）
 │   ├── prompt_builders.py   # PromptBuildersMixin（prompt 组装、LLM 生成调用）
-│   ├── bg_tasks.py          # BackgroundTasksMixin（7 个后台任务）
-│   ├── helpers.py           # HelpersMixin（技能集成、用户画像、token 记录）
+│   ├── bg_tasks.py          # BackgroundTasksMixin（6 个后台任务）
+│   ├── helpers.py           # HelpersMixin（技能集成、被动 SKILL 注册与触发分发、token 记录）
+│   ├── skill_engine_context.py # SkillEngineContextImpl（被动 SKILL 与引擎交互适配器）
 │   ├── cognition.py         # 统一认知分析器（情绪+意图联合推断）
 │   ├── response_assembler.py # Prompt 组装 + 风格适配
 │   ├── response_strategy.py # 四层响应策略（IMMEDIATE/DELAYED/SILENT/PROACTIVE）
@@ -117,7 +118,7 @@ sirius_chat/
 │   ├── registry.py          # SKILL注册与发现
 │   ├── executor.py          # SKILL执行（参数校验、重试、遥测）
 │   ├── security.py          # 开发者权限校验
-│   ├── models.py            # SkillDefinition/SkillResult等数据模型
+│   ├── models.py            # SkillDefinition/SkillResult/SkillPassiveType/BackgroundTaskSpec/TriggerSpec/SkillEngineContext 等数据模型
 │   ├── data_store.py        # SKILL独立JSON数据存储
 │   ├── dependency_resolver.py # 依赖自动解析安装
 │   ├── telemetry.py         # 执行遥测记录

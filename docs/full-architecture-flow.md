@@ -121,7 +121,7 @@ flowchart TD
 flowchart TD
     A["PersonaWorker.run()"] --> B["加载配置<br/>adapters.json / experience.json /<br/>orchestration.json / persona.json"]
     B --> C["创建 EngineRuntime<br/>work_path=人格目录<br/>global_data_path=data/"]
-    C --> D["启动 EngineRuntime<br/>懒加载 EmotionalGroupChatEngine<br/>启动 7 个后台任务"]
+    C --> D["启动 EngineRuntime<br/>懒加载 EmotionalGroupChatEngine<br/>启动后台任务"]
     D --> E["为每个 enabled adapter<br/>创建 NapCatAdapter + NapCatBridge"]
     E --> F["bridge.start()<br/>启动 _event_bus_listener"]
     F --> G["runtime.add_skill_bridge('napcat', bridge)<br/>注入 bridge 到 SkillExecutor"]
@@ -271,18 +271,23 @@ sequenceDiagram
 
 ## 第五章：后台任务系统
 
-### 5.1 引擎启动后的 7 个后台任务
+### 5.1 引擎后台任务
+
+引擎内置 6 个后台任务，另有被动 SKILL 注册的任务（如 reminder）并行运行：
 
 ```mermaid
 flowchart LR
-    subgraph BG["后台任务（并行运行）"]
+    subgraph BG["内置后台任务（并行运行）"]
         T1["任务1<br/>延迟队列 ticker<br/>智能休眠（3-30s）"]
-        T2["任务2<br/>主动触发 checker<br/>每 30 秒"]
-        T3["任务3<br/>日记生成 promoter<br/>每 120 秒"]
+        T2["任务2<br/>主动触发 checker<br/>每 60 秒"]
+        T3["任务3<br/>日记生成 promoter<br/>每 180 秒"]
         T4["任务4<br/>日记 consolidator<br/>每 600 秒"]
         T5["任务5<br/>开发者私聊 checker<br/>每 60 秒"]
-        T6["任务6<br/>提醒检查器<br/>每 15 秒"]
-        T7["任务7<br/>表情包新鲜度更新<br/>每 300 秒"]
+        T6["任务6<br/>表情包新鲜度更新<br/>每 3600 秒"]
+    end
+
+    subgraph PassiveSK["被动 SKILL 任务"]
+        T7["reminder checker<br/>每 15 秒<br/>通过 create_background_tasks() 注册"]
     end
 
     T1 -->|"检测话题间隙<br/>触发延迟回复"| Engine["EmotionalGroupChatEngine"]
@@ -290,18 +295,21 @@ flowchart LR
     T3 -->|"冷群检测<br/>LLM 生成日记"| Engine
     T4 -->|"合并相似日记"| Engine
     T5 -->|"检查开发者私聊"| Engine
-    T6 -->|"扫描到期提醒<br/>支持 once/interval/daily/weekly"| Engine
-    T7 -->|"衰减 novelty_score<br/>模拟喜新厌旧"| Engine
+    T6 -->|"衰减 novelty_score<br/>模拟喜新厌旧"| Engine
+    T7 -->|"扫描到期提醒<br/>支持 once/interval/daily/weekly"| Engine
 ```
 
 ### 5.2 提醒系统完整链路
+
+提醒是一个**双模式 SKILL**：主动模式由模型调用 `run()` 创建/管理提醒，被动模式通过 `create_background_tasks(ctx)` 注册周期性检查任务。
 
 ```mermaid
 sequenceDiagram
     participant User as 用户
     participant AI as AI 回复
-    participant Skill as reminder SKILL
+    participant Skill as reminder SKILL (active)
     participant Store as SkillDataStore
+    participant Passive as reminder 被动任务
     participant Engine as EmotionalEngine
     participant Bridge as NapCatBridge
     participant QQ as QQ 群
@@ -312,15 +320,16 @@ sequenceDiagram
     Skill->>Store: 存入 skill_data/reminder.json
     Note over Engine: 引擎自动注入 group_id 和 adapter_type
 
-    Note over Engine: 后台任务6（每 10 秒）
-    Engine->>Engine: _check_due_reminders()
-    Engine->>Engine: 扫描 reminder.json
-    Engine->>Engine: 发现到期提醒
-    Engine->>Engine: _generate_reminder_message()
-    Engine->>Engine: LLM 生成人格化提醒
-    Engine->>Engine: 放入 _pending_reminders[group_id]
+    Note over Passive: 被动任务 checker（每 15 秒）
+    Passive->>Passive: _check_and_fire_reminders(ctx)
+    Passive->>Passive: 扫描 reminder.json
+    Passive->>Passive: 发现到期提醒
+    Passive->>Passive: _execute_skill_chain()（若有预执行链）
+    Passive->>Passive: _generate_reminder_message(ctx)
+    Passive->>Passive: LLM 生成人格化提醒
+    Passive->>Passive: 放入 _pending_reminders[group_id]
 
-    Note over Bridge: 后台投递循环（每 3 秒）
+    Note over Bridge: 事件总线监听
     Bridge->>Engine: pop_reminders(gid, adapter_type)
     Engine-->>Bridge: 返回提醒消息
     Bridge->>QQ: _send_group_text_raw()
@@ -495,8 +504,8 @@ flowchart TD
 | **引擎核心** | `core/engine_core.py` | 引擎基类：__init__、公开 API、持久化、表情包系统初始化 |
 | **引擎管线** | `core/pipeline.py` | 5 阶段管线：感知→认知→决策→执行→后台更新 |
 | **Prompt 构建** | `core/prompt_builders.py` | prompt 组装、延迟回复/主动触发 prompt 构建、LLM 生成调用 |
-| **引擎后台任务** | `core/bg_tasks.py` | 7 个后台任务：延迟队列、主动触发、日记生成/合并、开发者私聊、提醒、表情包新鲜度 |
-| **引擎辅助** | `core/helpers.py` | 技能集成、上下文辅助、用户画像分析、token 记录、异常分类 |
+| **引擎后台任务** | `core/bg_tasks.py` | 6 个后台任务：延迟队列、主动触发、日记生成/合并、开发者私聊、表情包新鲜度 |
+| **引擎辅助** | `core/helpers.py` | 技能集成（含被动 SKILL 注册与触发分发）、上下文辅助、用户画像分析、token 记录、异常分类 |
 | **认知分析** | `core/cognition.py` | 统一情绪+意图分析、规则引擎+LLM fallback |
 | **响应策略** | `core/response_strategy.py` | 四种策略选择（IMMEDIATE/DELAYED/SILENT/PROACTIVE） |
 | **动态阈值** | `core/threshold_engine.py` | 阈值计算：base × activity × relationship × time |
@@ -509,7 +518,8 @@ flowchart TD
 | **语义记忆** | `memory/semantic/` | 群氛围、规范、关系状态 |
 | **上下文组装** | `memory/context_assembler.py` | 基础记忆+日记 → OpenAI messages |
 | **Provider 层** | `providers/` | 统一请求协议、7 个平台实现、自动路由 |
-| **SKILL 层** | `skills/` | 注册、执行、数据存储、依赖解析、内置技能、遥测 |
+| **SKILL 层** | `skills/` | 注册、执行、数据存储、依赖解析、内置技能、遥测；被动 SKILL 支持（BackgroundTaskSpec/TriggerSpec/SkillEngineContext） |
+| **SKILL 引擎上下文** | `core/skill_engine_context.py` | SkillEngineContextImpl：被动 SKILL 与引擎交互的适配器 |
 | **表情包系统** | `skills/sticker/` | RAG 表情包：向量索引、偏好管理、学习、反馈观察、新鲜度 |
 | **配置层** | `config/` | 类型安全的配置契约、加载器、helpers、JSONC |
 | **WebUI 层** | `webui/` | aiohttp REST API（server_core + 4 个 API 模块）+ 管理面板（16 个页面） |

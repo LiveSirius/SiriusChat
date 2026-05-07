@@ -63,7 +63,7 @@ def run(
 | 约定 | 说明 |
 |------|------|
 | 存放位置 | `skills/` 目录下的 `.py` 文件；位于人格目录（`data/personas/{name}/skills/`） |
-| 必须导出 | `SKILL_META` 字典 + `run()` 函数 |
+| 必须导出 | `SKILL_META` 字典 + `run()` 函数（主动模式）；被动模式可仅导出 `create_background_tasks()` / `create_triggers()` |
 | 命名规则 | 文件名建议与 `SKILL_META["name"]` 一致（如 `hello.py`） |
 | 编码 | UTF-8 |
 | 跳过规则 | 以 `_` 或 `.` 开头的文件会被自动跳过 |
@@ -223,7 +223,7 @@ def run(data_store: Any = None, **kwargs: Any) -> dict:
 | `file_read` | 所有人 | 读取任意路径下的文本文件 | `file`, `io` |
 | `file_list` | 所有人 | 列出或搜索文件和目录 | `file`, `io` |
 | `file_write` | **仅开发者** | 创建或修改文本文件 | `file`, `io` |
-| `reminder` | 所有人 | 设置定时提醒 | `utility`, `time` |
+| `reminder` | 所有人 | 设置定时提醒（支持主动创建 + 被动后台检查） | `utility`, `time` |
 
 内置 SKILL 存放在 `sirius_chat/skills/builtin/`。
 
@@ -300,7 +300,131 @@ def run(**kwargs: Any) -> dict[str, Any]:
 
 ---
 
-## 第十一章：Token 优化
+## 第十一章：被动 SKILL（Passive SKILL）
+
+### 11.1 概述
+
+被动 SKILL 是不由模型直接调用的能力。它通过**后台任务**（周期执行）或**事件触发器**（响应引擎事件）自主运行，并通过 `SkillEngineContext` 协议与引擎交互。
+
+典型场景：
+- 定时提醒检查（`reminder` SKILL 的被动模式）
+- 周期性数据同步
+- 事件驱动的消息处理
+
+### 11.2 双模式 SKILL
+
+一个 SKILL 可以同时具备主动和被动能力。例如 `reminder`：
+- **主动**：AI 调用 `run()` 创建/查询/取消提醒
+- **被动**：`create_background_tasks(ctx)` 注册每 15 秒的提醒检查任务
+
+### 11.3 工厂函数
+
+SKILL 文件通过导出以下工厂函数注册被动行为：
+
+```python
+from sirius_chat import BackgroundTaskSpec, TriggerSpec, SkillEngineContext
+
+def create_background_tasks(ctx: SkillEngineContext) -> list[BackgroundTaskSpec]:
+    """返回要注册的周期性后台任务列表。"""
+    return [
+        BackgroundTaskSpec(
+            name="my_periodic_task",
+            interval_seconds=60,
+            run_loop=my_async_checker,
+        ),
+    ]
+
+def create_triggers(ctx: SkillEngineContext) -> list[TriggerSpec]:
+    """返回要注册的事件触发器列表。"""
+    return [
+        TriggerSpec(
+            name="my_event_handler",
+            event_type="COGNITION_COMPLETED",
+            handler=my_async_handler,
+        ),
+    ]
+```
+
+### 11.4 BackgroundTaskSpec
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | `str` | 任务唯一标识 |
+| `interval_seconds` | `float` | 执行间隔（秒） |
+| `run_loop` | `Callable[[SkillEngineContext], Awaitable[None]]` | 异步回调，每次循环调用 |
+
+`run_loop` 内部自行决定 sleep 时机，引擎仅负责创建 `asyncio.Task` 并管理生命周期。
+
+### 11.5 TriggerSpec
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | `str` | 触发器唯一标识 |
+| `event_type` | `str` | 监听的事件类型（对应 `SessionEventType` 的值） |
+| `handler` | `Callable[[SkillEngineContext, SessionEvent], Awaitable[None]]` | 事件处理回调 |
+
+引擎在 `helpers.py` 中通过 `_wrap_event_bus_for_triggers()` 包装 `event_bus.emit`，每次事件发射时自动分发给匹配的 trigger handler。
+
+### 11.6 SkillEngineContext 协议
+
+被动 SKILL 通过 `SkillEngineContext` 与引擎交互，主要方法：
+
+| 方法 | 说明 |
+|------|------|
+| `generate_text(system_prompt, user_content, group_id)` | 调用 LLM 生成文本 |
+| `queue_pending_message(group_id, text)` | 将消息放入待发送队列 |
+| `emit_event(event)` | 发射引擎事件 |
+| `get_data_store(skill_name)` | 获取指定 SKILL 的数据存储 |
+| `get_active_groups()` | 获取当前活跃群列表 |
+| `get_config_value(key, default)` | 读取引擎配置 |
+| `get_persona()` | 获取当前人格信息 |
+| `add_memory_entry(...)` | 写入基础记忆 |
+| `get_user_communication_style(group_id, user_id)` | 获取用户沟通风格 |
+| `get_skill_descriptions(caller_is_developer)` | 获取 SKILL 描述列表 |
+| `get_current_adapter_type()` | 获取当前适配器类型 |
+
+### 11.7 注册与生命周期
+
+1. 引擎启动时，`helpers.py` 的 `_register_passive_skills()` 扫描所有注册的 SKILL
+2. 对每个有 `create_background_tasks` / `create_triggers` 的 SKILL，调用工厂函数获取 spec 列表
+3. 后台任务通过 `asyncio.create_task()` 启动，存入 `_passive_skill_tasks`
+4. 触发器存入 `_passive_skill_triggers`，由 `_dispatch_triggers()` 分发
+5. 引擎停止时，所有被动任务和触发器被自动清理
+
+### 11.8 最小被动 SKILL 示例
+
+```python
+"""周期性清理过期缓存的被动 SKILL。"""
+from __future__ import annotations
+import asyncio
+from sirius_chat import BackgroundTaskSpec, SkillEngineContext
+
+SKILL_META = {
+    "name": "cache_cleaner",
+    "description": "周期性清理过期缓存（被动运行，无需 AI 调用）",
+    "version": "1.0.0",
+    "tags": ["utility"],
+}
+
+async def _clean_loop(ctx: SkillEngineContext) -> None:
+    while True:
+        await asyncio.sleep(3600)
+        store = ctx.get_data_store("cache_cleaner")
+        # 清理逻辑...
+
+def create_background_tasks(ctx: SkillEngineContext) -> list[BackgroundTaskSpec]:
+    return [
+        BackgroundTaskSpec(
+            name="cache_cleanup",
+            interval_seconds=3600,
+            run_loop=_clean_loop,
+        ),
+    ]
+```
+
+---
+
+## 第十二章：Token 优化
 
 当注册的技能数量 **超过 5 个** 时，`ResponseAssembler` 会自动切换到**紧凑描述模式**：
 
@@ -318,7 +442,7 @@ def run(**kwargs: Any) -> dict[str, Any]:
 
 ---
 
-## 第十二章：完整示例
+## 第十三章：完整示例
 
 ### 天气查询 SKILL
 
@@ -409,3 +533,5 @@ config = SessionConfig(
 - [ ] 返回值为 `dict` 或可序列化对象
 - [ ] 不依赖未安装的第三方库（或在 `dependencies` 中显式声明）
 - [ ] 不包含长时间阻塞操作（注意 30 秒超时限制）
+- [ ] 若是被动 SKILL，`create_background_tasks()` / `create_triggers()` 工厂函数签名正确
+- [ ] 被动 SKILL 的 `run_loop` / `handler` 回调包含异常处理（`try/except` + 日志），不会因未捕获异常导致任务静默终止

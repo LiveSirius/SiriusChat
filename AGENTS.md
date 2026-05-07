@@ -53,9 +53,10 @@
 | `sirius_chat/core/emotional_engine.py`    | v1.0 核心情感群聊引擎（Mixin 最终类）       |
 | `sirius_chat/core/engine_core.py`         | 引擎基类（__init__、API、持久化）           |
 | `sirius_chat/core/pipeline.py`            | 5 阶段管线 Mixin                        |
-| `sirius_chat/core/bg_tasks.py`            | 7 个后台任务 Mixin                       |
+| `sirius_chat/core/bg_tasks.py`            | 6 个后台任务 Mixin                       |
 | `sirius_chat/core/prompt_builders.py`     | Prompt 组装与 LLM 生成 Mixin             |
-| `sirius_chat/core/helpers.py`             | 技能集成、用户画像、token 记录 Mixin         |
+| `sirius_chat/core/helpers.py`             | 技能集成、被动 SKILL 注册与触发分发、token 记录 Mixin |
+| `sirius_chat/core/skill_engine_context.py` | SkillEngineContextImpl：被动 SKILL 与引擎交互适配器 |
 | `sirius_chat/persona_manager.py`          | 多人格生命周期管理                          |
 | `sirius_chat/persona_worker.py`           | 子进程入口                              |
 | `sirius_chat/persona_config.py`           | 人格级配置模型                            |

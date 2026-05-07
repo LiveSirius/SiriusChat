@@ -90,11 +90,13 @@
 
 ### Added
 
+- **被动 SKILL 系统**：SKILL 新增被动模式（不由模型调用，通过后台任务或事件触发自主运行）。新增 `BackgroundTaskSpec`（周期性后台任务）、`TriggerSpec`（事件触发器）、`SkillEngineContext` 协议（引擎交互接口）和 `SkillEngineContextImpl` 适配器。SKILL 文件可导出 `create_background_tasks(ctx)` / `create_triggers(ctx)` 工厂函数注册被动行为。引擎在 `helpers.py` 中统一管理被动 SKILL 的注册、启动和触发分发，事件总线 `emit` 自动转发为 trigger dispatch。内置 `reminder` SKILL 重构为双模式（主动 `run()` + 被动 `create_background_tasks()`），原有 `bg_tasks.py` 中硬编码的提醒检查逻辑已移除至 SKILL 内部。
 - **NapCat 实例自管理**：`PersonaWorker` 在连接 WS 失败时自动安装/启动/等待 NapCat 实例就绪，简化 `main.py` 启动逻辑。
 - **指向性识别新增 `other_mention_score`**：消息 @ 的不是 AI 时强制压低 `directed_score`，避免误将指向他人的消息判定为指向自己。
 - **表情包学习即时展示**：`StickerLearner` 在学习开始前写入 pending 记录，WebUI 可立即展示正在学习的表情包。
 - **远程图片缓存**：`send_image` skill 支持将远程 URL 图片下载到本地后发送，避免重复下载。
 - **表情包 WebUI 扩展**：表情包页面新增"学习中"统计卡片和 pending 状态标识。
+- **表情包标签匹配优化**：`StickerIndexer` 标签匹配逻辑支持多维度标签（mood、action、context），新增推荐标签功能，提升表情包检索准确性。
 
 ### Changed
 
@@ -105,6 +107,8 @@
 - **指向性语言信号拆分**：强信号（name_match、imperative）与弱信号（second_person、question）分开处理，`topic_relevance` 不再计入指向性。
 - **开发者特殊优先级移除**：`ThresholdEngine._relationship_factor` 不再对开发者身份特殊处理，改为由 pipeline 侧的 `relationship_state` 统一管理。
 - **测试配置优化**：`conftest.py` 的 `ram_tmp_path` 优先使用 pytest basetemp 目录，避免 Windows Defender 实时扫描导致测试 I/O 超时。
+- **消息标注与输出规范增强**：`ResponseAssembler` 移除 `_build_empathy_instruction` 方法和情绪段落中的 valence/arousal 数值输出，简化 system prompt 内容；延迟回复 prompt 新增 `speaker_name` 参数，关系上下文和首次交互个性化消息支持指名。`ResponseStrategyEngine.decide()` 恢复 `heat_level` 参数，hot 群聊 urgency ×0.85/relevance ×0.92，overheated 群聊 urgency ×0.68/relevance ×0.85。
+- **WebUI 页面加载器重构**：`core.js`/`config.js` 页面加载器注册逻辑重构，统一加载流程。
 
 ### Fixed
 
