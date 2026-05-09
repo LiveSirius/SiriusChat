@@ -1,49 +1,43 @@
-"""表情包语义索引：检索 + 多维度加权随机选择。"""
+"""表情包语义索引：检索 + 多维度加权随机选择。
+
+Embedding 是强依赖：所有语义计算均通过 EmbeddingClient 调用远程微服务，
+不再内置 SentenceTransformer 本地模型加载与 fallback 逻辑。
+"""
 
 from __future__ import annotations
 
 import logging
 import math
-import os
 import random
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sirius_chat.embedding.client import EmbeddingClient
 from sirius_chat.skills.sticker.models import StickerPreference, StickerRecord
 from sirius_chat.skills.sticker.vector_store import StickerVectorStore
 
 logger = logging.getLogger(__name__)
 
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-
-try:
-    from sentence_transformers import SentenceTransformer
-
-    _ST_AVAILABLE = True
-except Exception:  # pragma: no cover
-    _ST_AVAILABLE = False
-
-_MODEL_SINGLETON: dict[str, Any] = {}
-
 
 class StickerIndexer:
-    """表情包语义索引，支持多维度加权检索。"""
+    """表情包语义索引，支持多维度加权检索。
 
-    MODEL_NAME: str = "BAAI/bge-small-zh"
+    所有 embedding 计算均通过 EmbeddingClient 调用远程微服务。
+    ``enable_semantic=False`` 时仅使用关键词检索（供单元测试使用）。
+    """
 
     def __init__(
         self,
         work_path: Path | str,
         persona_name: str,
         enable_semantic: bool = True,
+        embedding_client: EmbeddingClient | None = None,
     ) -> None:
         self._work_path = Path(work_path)
         self._persona_name = persona_name
         self._enable_semantic = enable_semantic
-        self._model: Any | None = None
-        self._embedding_dim: int | None = None
+        self._embedding_client = embedding_client
 
         self._records: dict[str, StickerRecord] = {}
         self._tag_embedding_cache: dict[str, list[float]] = {}
@@ -54,88 +48,71 @@ class StickerIndexer:
 
         if not enable_semantic:
             logger.debug("表情包语义索引已禁用")
-        elif not _ST_AVAILABLE:
-            logger.warning("sentence-transformers 未安装，表情包检索将退化为纯关键词匹配")
-
-    def _ensure_model_loaded(self) -> None:
-        if self._model is not None or not self._enable_semantic or not _ST_AVAILABLE:
-            return
-        cached = _MODEL_SINGLETON.get(self.MODEL_NAME)
-        if cached is not None:
-            self._model = cached
-            self._embedding_dim = getattr(self._model, "get_embedding_dimension", lambda: None)()
-            logger.info("表情包索引复用已缓存模型 %s", self.MODEL_NAME)
-        else:
-            self._model = self._load_model_local_first(self.MODEL_NAME)
-            if self._model is not None:
-                _MODEL_SINGLETON[self.MODEL_NAME] = self._model
-                self._embedding_dim = getattr(self._model, "get_embedding_dimension", lambda: None)()
-                logger.info("表情包索引已加载模型 %s", self.MODEL_NAME)
-
-    @staticmethod
-    def _load_model_local_first(model_name: str) -> Any | None:
-        try:
-            model = SentenceTransformer(model_name, local_files_only=True)
-            logger.info("模型 %s 从本地缓存加载", model_name)
-            return model
-        except Exception as exc:
-            logger.warning("表情包索引模型本地加载失败: %s", exc)
-            return None
+        elif embedding_client is None:
+            logger.warning("未提供 EmbeddingClient，表情包语义检索不可用")
 
     @property
     def semantic_available(self) -> bool:
-        return self._model is not None
+        """语义能力是否可用（需要 enable_semantic 且 EmbeddingClient 可用）。"""
+        if not self._enable_semantic:
+            return False
+        return self._embedding_client is not None and self._embedding_client.available
+
+    def encode_texts(self, texts: list[str]) -> list[list[float]]:
+        """通过远程 Embedding 服务编码文本列表。
+
+        Raises:
+            RuntimeError: 无 EmbeddingClient 或服务调用失败。
+        """
+        if self._embedding_client is None:
+            raise RuntimeError("EmbeddingClient 未初始化，无法计算 embedding")
+        return self._embedding_client.encode(texts)
+
+    def encode_single(self, text: str) -> list[float]:
+        """编码单条文本，返回嵌入向量。"""
+        return self._embedding_client.encode_single(text) if self._embedding_client else []
 
     def add(self, record: StickerRecord) -> bool:
-        """添加表情包到索引，计算 usage_context_embedding。
+        """添加表情包到索引，自动计算 embedding。
 
-        同一个 sticker_id 的不同使用情境会作为独立记录存储，
-        以 record_id 为键，支持多情境检索。
-
-        添加时会自动检查同一 sticker_id 下是否有语义相似的
-        已有记录，相似则合并，避免重复存储。
+        当 semantic_available 为 True 时，自动计算
+        usage_context_embedding / caption_embedding / scene_summary_embedding。
         """
-        logger.debug("表情包索引添加: record_id=%s sticker_id=%s file=%s", record.record_id, record.sticker_id, record.file_path)
-        self._ensure_model_loaded()
+        logger.debug(
+            "表情包索引添加: record_id=%s sticker_id=%s file=%s",
+            record.record_id, record.sticker_id, record.file_path,
+        )
         recomputed = False
-        if self._model is not None:
-            if record.usage_context_embedding and self._embedding_dim is not None:
-                if len(record.usage_context_embedding) != self._embedding_dim:
-                    record.usage_context_embedding = None
-                    record.caption_embedding = None
-
+        if self.semantic_available:
             if not record.usage_context_embedding:
-                try:
-                    vec = self._model.encode(record.usage_context, convert_to_tensor=False)
-                    record.usage_context_embedding = [float(v) for v in vec]
+                vec = self.encode_single(record.usage_context)
+                if vec:
+                    record.usage_context_embedding = vec
                     recomputed = True
-                    logger.debug("表情包索引: record_id=%s usage_context_embedding 计算完成", record.record_id)
-                except Exception as exc:
-                    logger.warning("表情包 usage_context embedding 计算失败: %s", exc)
+                    logger.debug(
+                        "表情包索引: record_id=%s usage_context_embedding 计算完成",
+                        record.record_id,
+                    )
 
             if not record.caption_embedding and record.caption:
-                try:
-                    cap_vec = self._model.encode(record.caption, convert_to_tensor=False)
-                    record.caption_embedding = [float(v) for v in cap_vec]
-                except Exception as exc:
-                    logger.warning("表情包 caption embedding 计算失败: %s", exc)
+                cap_vec = self.encode_single(record.caption)
+                if cap_vec:
+                    record.caption_embedding = cap_vec
 
-        # 场景概括 embedding
-        if self._model is not None and record.scene_summary and not record.scene_summary_embedding:
-            try:
-                scene_vec = self._model.encode(record.scene_summary, convert_to_tensor=False)
-                record.scene_summary_embedding = [float(v) for v in scene_vec]
-            except Exception as exc:
-                logger.warning("场景概括 embedding 计算失败: %s", exc)
+            if record.scene_summary and not record.scene_summary_embedding:
+                scene_vec = self.encode_single(record.scene_summary)
+                if scene_vec:
+                    record.scene_summary_embedding = scene_vec
 
         if self._vector_store.available:
             self._vector_store.add(record)
             logger.debug("表情包索引: record_id=%s 已存入向量存储", record.record_id)
-        else:
-            logger.debug("表情包索引: record_id=%s 向量存储不可用，仅存入内存", record.record_id)
 
         self._records[record.record_id] = record
-        logger.info("表情包索引添加完成: record_id=%s 总记录数=%d", record.record_id, len(self._records))
+        logger.info(
+            "表情包索引添加完成: record_id=%s 总记录数=%d",
+            record.record_id, len(self._records),
+        )
         return recomputed
 
     def search(
@@ -152,31 +129,31 @@ class StickerIndexer:
         支持双路检索：
         - Query A（current_context）: 匹配 usage_context_embedding（精确情境）
         - Query B（scene_query）: 匹配 scene_summary_embedding（场景概括）
-
-        同一个 sticker_id 按最高分去重。
         """
-        self._ensure_model_loaded()
-
         if not self._records:
             logger.debug("表情包库为空")
             return None
 
         # 1. 语义检索：Query A → usage_context
         context_scores: dict[str, float] = {}
-        if self._model is not None and self._vector_store.available:
-            try:
-                query_vec = self._model.encode(current_context, convert_to_tensor=False)
-                for rid, score in self._vector_store.search(query_vec, top_k=top_k * 2):
-                    context_scores[rid] = score
-            except Exception as exc:
-                logger.warning("向量存储检索失败，回退到内存检索: %s", exc)
+        if self.semantic_available:
+            if self._vector_store.available:
+                try:
+                    query_vec = self.encode_single(current_context)
+                    if query_vec:
+                        for rid, score in self._vector_store.search(
+                            query_vec, top_k=top_k * 2
+                        ):
+                            context_scores[rid] = score
+                except Exception as exc:
+                    logger.warning("向量存储检索失败，回退到内存检索: %s", exc)
+                    context_scores = self._semantic_search(current_context, top_k * 2)
+            else:
                 context_scores = self._semantic_search(current_context, top_k * 2)
-        else:
-            context_scores = self._semantic_search(current_context, top_k * 2)
 
         # 2. 语义检索：Query B → scene_summary
         scene_scores: dict[str, float] = {}
-        if scene_query and self._model is not None:
+        if scene_query and self.semantic_available:
             scene_scores = self._scene_search(scene_query, top_k * 2)
 
         # 3. 关键词检索
@@ -211,7 +188,7 @@ class StickerIndexer:
 
         scored.sort(key=lambda x: x[1], reverse=True)
 
-        # 6. 按 sticker_id 去重，保留每个表情包的最高分记录
+        # 6. 按 sticker_id 去重
         seen_stickers: set[str] = set()
         deduped: list[tuple[StickerRecord, float]] = []
         for record, score in scored:
@@ -242,13 +219,12 @@ class StickerIndexer:
         )
         return chosen
 
-    def _semantic_search(self, current_context: str, top_k: int) -> dict[str, float]:
-        if self._model is None:
-            return {}
-        try:
-            query_vec = self._model.encode(current_context, convert_to_tensor=False)
-        except Exception as exc:
-            logger.warning("Context embedding 失败: %s", exc)
+    def _semantic_search(
+        self, current_context: str, top_k: int
+    ) -> dict[str, float]:
+        """内存中的 usage_context 语义检索。"""
+        query_vec = self.encode_single(current_context)
+        if not query_vec:
             return {}
 
         scores: dict[str, float] = {}
@@ -260,7 +236,9 @@ class StickerIndexer:
                 scores[rid] = score
         return scores
 
-    def _keyword_search(self, current_context: str, top_k: int) -> dict[str, float]:
+    def _keyword_search(
+        self, current_context: str, top_k: int
+    ) -> dict[str, float]:
         query_lower = current_context.lower()
         scores: dict[str, float] = {}
         for rid, record in self._records.items():
@@ -276,14 +254,12 @@ class StickerIndexer:
                 scores[rid] = score
         return scores
 
-    def _scene_search(self, scene_query: str, top_k: int) -> dict[str, float]:
+    def _scene_search(
+        self, scene_query: str, top_k: int
+    ) -> dict[str, float]:
         """场景概括检索：Query B → scene_summary_embedding。"""
-        if self._model is None:
-            return {}
-        try:
-            query_vec = self._model.encode(scene_query, convert_to_tensor=False)
-        except Exception as exc:
-            logger.warning("场景查询 embedding 失败: %s", exc)
+        query_vec = self.encode_single(scene_query)
+        if not query_vec:
             return {}
 
         scores: dict[str, float] = {}
@@ -295,11 +271,16 @@ class StickerIndexer:
                 scores[rid] = score
         return scores
 
-    def _tag_matches(self, record_tag: str, target_tags: list[str], threshold: float = 0.75) -> bool:
+    def _tag_matches(
+        self,
+        record_tag: str,
+        target_tags: list[str],
+        threshold: float = 0.75,
+    ) -> bool:
         """精确匹配优先，失败时用 embedding 相似度兜底。"""
         if record_tag in target_tags:
             return True
-        if not target_tags or not self._model:
+        if not target_tags or not self.semantic_available:
             return False
         tag_emb = self._get_tag_embedding(record_tag)
         if tag_emb is None:
@@ -311,11 +292,13 @@ class StickerIndexer:
                     return True
         return False
 
-    def _best_tag_match(self, record_tag: str, target_tags: list[str]) -> str | None:
-        """返回最匹配的目标标签（精确优先，否则取相似度最高的），无匹配返回 None。"""
+    def _best_tag_match(
+        self, record_tag: str, target_tags: list[str]
+    ) -> str | None:
+        """返回最匹配的目标标签，无匹配返回 None。"""
         if record_tag in target_tags:
             return record_tag
-        if not target_tags or not self._model:
+        if not target_tags or not self.semantic_available:
             return None
         tag_emb = self._get_tag_embedding(record_tag)
         if tag_emb is None:
@@ -335,7 +318,9 @@ class StickerIndexer:
         if cached is not None:
             return cached
         try:
-            emb = self._model.encode(tag, convert_to_tensor=False).tolist()
+            emb = self.encode_single(tag)
+            if not emb:
+                return None
             self._tag_embedding_cache[tag] = emb
             return emb
         except Exception:
@@ -364,7 +349,7 @@ class StickerIndexer:
             + 0.15 * min(keyword_score / 2.0, 1.0)
         )
 
-        # 2. 人格偏好匹配（精确优先，embedding 兜底）
+        # 人格偏好匹配
         tag_bonus = 0.0
         tag_penalty = 0.0
         for tag in record.tags:
@@ -373,30 +358,36 @@ class StickerIndexer:
             if self._tag_matches(tag, preference.avoided_tags):
                 tag_penalty += 0.2
 
-        # 3. 标签成功率加权
+        # 标签成功率加权
         tag_success_bonus = 0.0
         for tag in record.tags:
-            matched = self._best_tag_match(tag, list(preference.tag_success_rate.keys()))
+            matched = self._best_tag_match(
+                tag, list(preference.tag_success_rate.keys())
+            )
             if matched is not None:
                 success_rate = preference.tag_success_rate[matched]
             else:
                 success_rate = 0.5
             tag_success_bonus += (success_rate - 0.5) * 0.1
 
-        # 4. 情绪匹配
+        # 情绪匹配
         emotion_bonus = 0.0
         emotion_tags = preference.emotion_tag_map.get(emotion_hint, [])
         if emotion_tags:
-            matching_count = sum(1 for tag in record.tags if self._tag_matches(tag, emotion_tags))
+            matching_count = sum(
+                1 for tag in record.tags if self._tag_matches(tag, emotion_tags)
+            )
             emotion_bonus = matching_count * 0.15
 
-        # 5. 新鲜度（喜新厌旧）
-        novelty_boost = record.novelty_score * preference.novelty_preference * 0.25
+        # 新鲜度
+        novelty_boost = (
+            record.novelty_score * preference.novelty_preference * 0.25
+        )
 
-        # 6. 使用频率惩罚（避免过度使用）
+        # 使用频率惩罚
         overuse_penalty = min(0.35, record.usage_count * 0.06)
 
-        # 7. 近期使用惩罚（模拟"一段时间内偏爱某几个"后的倦怠）
+        # 近期使用惩罚
         recent_penalty = 0.0
         recent_usage = sum(
             1 for u in preference.recent_usage_window
@@ -405,10 +396,12 @@ class StickerIndexer:
         if recent_usage >= 3:
             recent_penalty = min(0.3, (recent_usage - 2) * 0.08)
 
-        # 8. 群聊反馈加权
+        # 群聊反馈加权
         group_feedback_bonus = 0.0
         for tag in record.tags:
-            matched = self._best_tag_match(tag, list(preference.group_tag_feedback.keys()))
+            matched = self._best_tag_match(
+                tag, list(preference.group_tag_feedback.keys())
+            )
             if matched is not None:
                 feedback = preference.group_tag_feedback[matched]
             else:
@@ -416,14 +409,15 @@ class StickerIndexer:
             group_feedback_bonus += (feedback - 0.5) * 0.08
 
         final_score = (
-            base_score +
-            tag_bonus - tag_penalty +
-            tag_success_bonus +
-            emotion_bonus +
-            novelty_boost -
-            overuse_penalty -
-            recent_penalty +
-            group_feedback_bonus
+            base_score
+            + tag_bonus
+            - tag_penalty
+            + tag_success_bonus
+            + emotion_bonus
+            + novelty_boost
+            - overuse_penalty
+            - recent_penalty
+            + group_feedback_bonus
         )
         return max(0.0, min(1.0, final_score))
 
@@ -483,12 +477,11 @@ class StickerIndexer:
                     encoding="utf-8",
                 )
             except Exception as exc:
-                logger.warning("保存表情包记录失败 %s: %s", file_path, exc)
+                logger.warning("保存表情包记录失败 %s: %s", record.sticker_id, exc)
 
     def remove(self, record_id: str) -> None:
+        """删除指定记录。"""
         if record_id in self._records:
             del self._records[record_id]
-        if self._vector_store.available:
-            self._vector_store.remove([record_id])
-
-
+            if self._vector_store.available:
+                self._vector_store.remove([record_id])

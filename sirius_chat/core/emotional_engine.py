@@ -43,6 +43,7 @@ def create_emotional_engine(
     persona: Any | None = None,
     config: dict[str, Any] | None = None,
     vector_store: Any | None = None,
+    embedding_client: Any | None = None,
 ) -> "EmotionalGroupChatEngine":
     """Factory for EmotionalGroupChatEngine (v0.28+).
 
@@ -52,6 +53,7 @@ def create_emotional_engine(
         persona: Optional PersonaProfile or string archetype name.
         config: Optional engine configuration dict.
         vector_store: Optional DiaryVectorStore for persistent embeddings.
+        embedding_client: Optional EmbeddingClient for shared embedding service.
 
     Returns:
         Configured EmotionalGroupChatEngine instance.
@@ -63,6 +65,7 @@ def create_emotional_engine(
         persona=persona,
         config=config,
         vector_store=vector_store,
+        embedding_client=embedding_client,
     )
 
 

@@ -290,14 +290,14 @@ class StickerLearner:
                 logger.warning("场景概括生成失败: LLM 返回空内容")
                 return
 
-            # 计算 embedding
+            # 通过远程 Embedding 服务计算场景概括向量
             scene_embedding: list[float] | None = None
-            if self._indexer._model is not None:
-                try:
-                    vec = self._indexer._model.encode(summary, convert_to_tensor=False)
-                    scene_embedding = [float(v) for v in vec]
-                except Exception as exc:
-                    logger.warning("场景概括 embedding 计算失败: %s", exc)
+            try:
+                scene_embedding = self._indexer.encode_single(summary)
+                if not scene_embedding:
+                    scene_embedding = None
+            except Exception as exc:
+                logger.warning("场景概括 embedding 计算失败: %s", exc)
 
             # 更新所有同 sticker_id 的记录
             new_count = first.scene_generalize_count + 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sirius_chat.embedding.client import EmbeddingClient
 from sirius_chat.memory.basic.models import BasicMemoryEntry
 from sirius_chat.memory.diary.generator import DiaryGenerator
 from sirius_chat.memory.diary.indexer import DiaryIndexer, DiaryRetriever
@@ -22,9 +23,17 @@ class DiaryManager:
     - Persists to disk.
     """
 
-    def __init__(self, work_path: Any, vector_store: Any | None = None) -> None:
+    def __init__(
+        self,
+        work_path: Any,
+        vector_store: Any | None = None,
+        embedding_client: EmbeddingClient | None = None,
+    ) -> None:
         self._store = DiaryFileStore(work_path)
-        self._indexer = DiaryIndexer(vector_store=vector_store)
+        self._indexer = DiaryIndexer(
+            vector_store=vector_store,
+            embedding_client=embedding_client,
+        )
         self._retriever = DiaryRetriever(self._indexer)
         self._generator = DiaryGenerator()
         # Track source_ids that have already been diary-ized per group

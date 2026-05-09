@@ -54,11 +54,13 @@ class _EmotionalGroupChatEngineBase:
         config: dict[str, Any] | None = None,
         persona: Any | None = None,
         vector_store: Any | None = None,
+        embedding_client: Any | None = None,
     ) -> None:
         self.config = dict(config or {})
         self.provider_async = provider_async
         self.work_path = work_path
         self._vector_store = vector_store
+        self._embedding_client = embedding_client
 
         # Expressiveness regulator (single-knob)
         from sirius_chat.config.models import ExpressivenessConfig
@@ -135,7 +137,11 @@ class _EmotionalGroupChatEngineBase:
             context_window=self.config.get("basic_memory_context_window", 5),
         )
         self.basic_store = BasicMemoryFileStore(work_path)
-        self.diary_manager = DiaryManager(work_path, vector_store=self._vector_store)
+        self.diary_manager = DiaryManager(
+            work_path,
+            vector_store=self._vector_store,
+            embedding_client=self._embedding_client,
+        )
         self.user_manager = UserManager()
         self.identity_resolver = IdentityResolver()
         self.context_assembler = ContextAssembler(
@@ -723,6 +729,7 @@ class _EmotionalGroupChatEngineBase:
                 basic_memory=self.basic_memory,
                 model_name=self._task_models.get("sticker_tag_extract", self._default_model),
                 token_callback=self._record_sticker_subtask_tokens,
+                embedding_client=self._embedding_client,
             )
             logger.info("表情包系统初始化完成: %s", self.persona.name if self.persona else "default")
 

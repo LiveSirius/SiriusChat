@@ -18,6 +18,7 @@ from typing import Any
 from sirius_chat.core.emotional_engine import create_emotional_engine
 from sirius_chat.core.emotional_engine import EmotionalGroupChatEngine
 from sirius_chat.core.persona_store import PersonaStore
+from sirius_chat.embedding.client import EmbeddingClient
 from sirius_chat.providers.routing import AutoRoutingProvider, ProviderConfig
 from sirius_chat.skills.registry import SkillRegistry
 from sirius_chat.skills.executor import SkillExecutor
@@ -263,11 +264,27 @@ class EngineRuntime:
         else:
             LOG.warning("日记向量存储未启用，将使用纯内存索引")
 
+        # 创建共享 Embedding 客户端（连接 Embedding 微服务）
+        embedding_url = os.environ.get(
+            "SIRIUS_EMBEDDING_URL", "http://127.0.0.1:18900"
+        )
+        embedding_client = EmbeddingClient(base_url=embedding_url)
+        if embedding_client.available:
+            LOG.info("共享 Embedding 服务已连接: %s", embedding_url)
+        else:
+            LOG.error("共享 Embedding 服务不可用: %s", embedding_url)
+            raise RuntimeError(
+                f"Embedding 服务不可用 ({embedding_url})。"
+                "Sirius Chat 强依赖 Embedding 服务，请先启动: "
+                "python -m sirius_chat.embedding.server"
+            )
+
         engine = create_emotional_engine(
             work_path=self.work_path,
             provider=provider,
             config=config,
             vector_store=vector_store,
+            embedding_client=embedding_client,
         )
 
         # 尝试恢复状态

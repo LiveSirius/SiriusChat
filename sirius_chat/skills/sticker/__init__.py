@@ -31,20 +31,23 @@ def init_sticker_system(
     basic_memory: Any | None = None,
     model_name: str = "gpt-4o-mini",
     token_callback: Any | None = None,
+    embedding_client: Any | None = None,
 ) -> dict[str, Any]:
-    """初始化表情包系统。
+    """Initialize the sticker RAG system.
 
-    在 Engine 初始化时调用，创建所有必要的组件。
+    Called during Engine initialization to create all necessary components.
 
     Args:
-        work_path: 工作目录
-        persona_name: 人格名称
+        work_path: Working directory
+        persona_name: Persona name
         provider_async: LLM provider
-        basic_memory: 基础记忆管理器（用于反馈观察）
-        model_name: 标签提取和偏好生成使用的模型
+        basic_memory: Basic memory manager for feedback observation
+        model_name: Model for tag extraction and preference generation
+        token_callback: Token usage callback
+        embedding_client: Shared EmbeddingClient for remote embedding service
 
     Returns:
-        包含所有组件的字典
+        Dictionary containing all components
     """
     sticker_work_path = Path(work_path) / "stickers"
     sticker_work_path.mkdir(parents=True, exist_ok=True)
@@ -52,6 +55,7 @@ def init_sticker_system(
     indexer = StickerIndexer(
         work_path=sticker_work_path,
         persona_name=persona_name,
+        embedding_client=embedding_client,
     )
     indexer.load_from_disk()
 

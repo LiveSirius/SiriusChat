@@ -1,145 +1,85 @@
-"""Diary indexer: semantic embedding and RAG retrieval."""
+"""Diary indexer: semantic embedding and RAG retrieval.
+
+Embedding 是强依赖：所有语义计算均通过 EmbeddingClient 调用远程微服务，
+不再内置 SentenceTransformer 本地模型加载与 fallback 逻辑。
+"""
 
 from __future__ import annotations
 
 import logging
 import math
-import os
-from pathlib import Path
 from typing import Any
 
-# 阻断 transformers 后台自动连接 HuggingFace Hub（避免国内网络超时）
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-
+from sirius_chat.embedding.client import EmbeddingClient
 from sirius_chat.memory.diary.models import DiaryEntry
 from sirius_chat.memory.diary.vector_store import DiaryVectorStore
 
 logger = logging.getLogger(__name__)
 
-# Optional sentence-transformers for semantic search
-try:
-    from sentence_transformers import SentenceTransformer, util
-
-    _ST_AVAILABLE = True
-except Exception:  # pragma: no cover
-    _ST_AVAILABLE = False
-
-# Module-level model singleton: avoids reloading the model every time
-# DiaryIndexer is recreated (e.g. on plugin reload / engine rebuild).
-_MODEL_SINGLETON: dict[str, Any] = {}
-
 
 class DiaryIndexer:
-    """Semantic index for diary entries with persistent vector store.
+    """日记语义索引，使用 ChromaDB 持久化向量存储。
 
-    Uses ChromaDB for persistent vector storage and sentence-transformers
-    for embedding computation. Falls back to keyword-only search when
-    semantic components are unavailable.
+    所有 embedding 计算均通过 EmbeddingClient 调用远程微服务。
+    ``enable_semantic=False`` 时仅使用关键词检索（供单元测试使用）。
     """
-
-    MODEL_NAME: str = "BAAI/bge-small-zh"
 
     def __init__(
         self,
         enable_semantic: bool = True,
         vector_store: DiaryVectorStore | None = None,
+        embedding_client: EmbeddingClient | None = None,
     ) -> None:
         self._entries: list[DiaryEntry] = []
-        self._model: Any | None = None
-        self._embedding_dim: int | None = None
         self._enable_semantic = enable_semantic
         self._vector_store = vector_store
+        self._embedding_client = embedding_client
 
         if not enable_semantic:
             logger.debug("日记语义索引已禁用（enable_semantic=False）")
-        elif not _ST_AVAILABLE:
-            logger.warning(
-                "sentence-transformers 未安装，日记检索将退化为纯关键词匹配。"
-                "如需语义搜索请安装: pip install sentence-transformers"
-            )
-
-    def _ensure_model_loaded(self) -> None:
-        """Lazy-load the embedding model on first use."""
-        if self._model is not None or not self._enable_semantic or not _ST_AVAILABLE:
-            return
-        cached = _MODEL_SINGLETON.get(self.MODEL_NAME)
-        if cached is not None:
-            self._model = cached
-            self._embedding_dim = getattr(
-                self._model, "get_embedding_dimension", lambda: None
-            )()
-            logger.info(
-                "日记语义索引复用已缓存模型 %s (dim=%s)",
-                self.MODEL_NAME,
-                self._embedding_dim,
-            )
-        else:
-            self._model = self._load_model_local_first(self.MODEL_NAME)
-            if self._model is not None:
-                _MODEL_SINGLETON[self.MODEL_NAME] = self._model
-                self._embedding_dim = getattr(
-                    self._model, "get_embedding_dimension", lambda: None
-                )()
-                logger.info(
-                    "日记语义索引已加载模型 %s (dim=%s)",
-                    self.MODEL_NAME,
-                    self._embedding_dim,
-                )
-
-    @staticmethod
-    def _load_model_local_first(model_name: str) -> Any | None:
-        """Load SentenceTransformer from local cache only (no network).
-
-        Uses ``local_files_only=True`` to forcefully block any outgoing
-        HuggingFace Hub requests. If the model is not present locally,
-        loading fails immediately rather than falling back to download.
-        """
-        try:
-            model = SentenceTransformer(model_name, local_files_only=True)
-            logger.info("模型 %s 从本地缓存加载", model_name)
-            return model
-        except Exception as exc:
-            logger.warning("日记索引模型本地加载失败: %s", exc)
-            return None
+        elif embedding_client is None:
+            logger.warning("未提供 EmbeddingClient，日记语义检索不可用")
 
     @property
     def semantic_available(self) -> bool:
-        return self._model is not None
+        """语义能力是否可用（需要 enable_semantic 且 EmbeddingClient 可用）。"""
+        if not self._enable_semantic:
+            return False
+        return self._embedding_client is not None and self._embedding_client.available
+
+    def encode_texts(self, texts: list[str]) -> list[list[float]]:
+        """通过远程 Embedding 服务编码文本列表。
+
+        Raises:
+            RuntimeError: 无 EmbeddingClient 或服务调用失败。
+        """
+        if self._embedding_client is None:
+            raise RuntimeError("EmbeddingClient 未初始化，无法计算 embedding")
+        return self._embedding_client.encode(texts)
+
+    def encode_single(self, text: str) -> list[float]:
+        """编码单条文本，返回嵌入向量。"""
+        return self._embedding_client.encode_single(text) if self._embedding_client else []
 
     def add(self, entry: DiaryEntry) -> bool:
-        """Add an entry to the index, computing embedding if possible.
+        """将条目加入索引，自动计算 embedding。
 
-        If an existing embedding's dimension does not match the current model
-        (e.g. after switching from all-MiniLM-L6-v2 to bge-small-zh), it is
-        discarded and recomputed automatically.
+        当 semantic_available 为 True 且条目尚无 embedding 时，
+        自动通过远程服务计算并填充。
 
-        Returns True if an embedding was computed or recomputed.
+        Returns:
+            True 表示本次新计算了 embedding。
         """
-        self._ensure_model_loaded()
         recomputed = False
-        if self._model is not None:
-            # Detect stale embeddings from a previous model and force recompute
-            if entry.embedding and self._embedding_dim is not None:
-                if len(entry.embedding) != self._embedding_dim:
-                    logger.info(
-                        "日记 embedding 维度变更 (%d -> %d)，将重新计算: %s",
-                        len(entry.embedding),
-                        self._embedding_dim,
-                        entry.entry_id,
-                    )
-                    entry.embedding = None
-
+        if self.semantic_available:
             if not entry.embedding:
-                try:
-                    vec = self._model.encode(entry.content, convert_to_tensor=False)
-                    entry.embedding = [float(v) for v in vec]
+                vec = self.encode_single(entry.content)
+                if vec:
+                    entry.embedding = vec
                     recomputed = True
-                    logger.info("日记 embedding 已重新计算: %s", entry.entry_id)
-                except Exception as exc:
-                    logger.warning("日记 embedding 计算失败: %s | %s", entry.entry_id, exc)
+                    logger.info("日记 embedding 已计算: %s", entry.entry_id)
 
-        # Persist to vector store if available
+        # 持久化到向量存储
         if self._vector_store is not None and self._vector_store.available:
             self._vector_store.add(entry)
 
@@ -152,13 +92,16 @@ class DiaryIndexer:
         top_k: int = 5,
         group_id: str = "",
     ) -> list[tuple[DiaryEntry, float]]:
-        """Hybrid search: fuse semantic similarity + keyword matching.
+        """混合检索：融合语义相似度 + 关键词匹配。
 
-        If *group_id* is provided, only entries belonging to that group
-        are considered. Returns list of (entry, score) sorted by score
-        descending.
+        Args:
+            query: 检索查询。
+            top_k: 最大返回条目数。
+            group_id: 若指定，仅检索该群组的条目。
+
+        Returns:
+            (entry, score) 列表，按分数降序排列。
         """
-        self._ensure_model_loaded()
         entries = self._entries
         if group_id:
             entries = [e for e in entries if e.group_id == group_id]
@@ -166,34 +109,33 @@ class DiaryIndexer:
             logger.debug("日记检索: group=%s 无条目可检索", group_id)
             return []
 
-        # Compute both semantic and keyword scores on the full candidate set
+        # 语义检索
         semantic_scores: dict[str, float] = {}
-        if self._model is not None:
-            # Prefer vector store for semantic search if available
+        if self.semantic_available:
             if self._vector_store is not None and self._vector_store.available and group_id:
                 try:
-                    query_vec = self._model.encode(query, convert_to_tensor=False)
-                    for eid, score in self._vector_store.search(query_vec, group_id, top_k=top_k * 2):
-                        semantic_scores[eid] = score
+                    query_vec = self.encode_single(query)
+                    if query_vec:
+                        for eid, score in self._vector_store.search(
+                            query_vec, group_id, top_k=top_k * 2
+                        ):
+                            semantic_scores[eid] = score
                 except Exception as exc:
-                    logger.warning("向量存储检索失败，回退到内存检索: %s", exc)
-                    for entry, score in self._semantic_search(query, len(entries), entries):
-                        semantic_scores[entry.entry_id] = score
+                    logger.warning("向量存储检索失败: %s", exc)
             else:
                 for entry, score in self._semantic_search(query, len(entries), entries):
                     semantic_scores[entry.entry_id] = score
 
+        # 关键词检索
         keyword_scores: dict[str, float] = {}
         for entry, score in self._keyword_search(query, len(entries), entries):
             keyword_scores[entry.entry_id] = score
 
-        # Fuse: semantic 60% + keyword 40% (keyword normalized to [0, 1])
+        # 融合: 语义 60% + 关键词 40%
         fused: list[tuple[DiaryEntry, float]] = []
         for entry in entries:
             s = semantic_scores.get(entry.entry_id, 0.0)
             k = keyword_scores.get(entry.entry_id, 0.0)
-            # Keyword raw score can exceed 1.0 (1.0 content + 0.8 summary + 0.5*keywords)
-            # Soft-cap at 2.0 and compress to [0, 1]
             final = 0.6 * s + 0.4 * min(k / 2.0, 1.0)
             if final > 0.05:
                 fused.append((entry, final))
@@ -205,7 +147,7 @@ class DiaryIndexer:
             group_id,
             query,
             len(entries),
-            "开" if self._model is not None else "关",
+            "开" if self.semantic_available else "关",
             len(result),
         )
         return result
@@ -216,19 +158,17 @@ class DiaryIndexer:
         top_k: int,
         entries: list[DiaryEntry],
     ) -> list[tuple[DiaryEntry, float]]:
-        try:
-            query_vec = self._model.encode(query, convert_to_tensor=False)
-        except Exception as exc:
-            logger.warning("Query embedding 失败: %s", exc)
-            return self._keyword_search(query, top_k, entries)
+        """内存中的语义检索。"""
+        query_vec = self.encode_single(query)
+        if not query_vec:
+            return []
 
         scored: list[tuple[DiaryEntry, float]] = []
         for entry in entries:
             if not entry.embedding:
                 continue
-            # Cosine similarity via dot product of normalized vectors
             score = self._cosine_sim(query_vec, entry.embedding)
-            if score > 0.25:  # minimum relevance threshold
+            if score > 0.25:
                 scored.append((entry, score))
 
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -280,16 +220,7 @@ class DiaryIndexer:
                 new_entries.append(e)
         self._entries = new_entries
 
-        # Also remove from vector store
         if removed_ids and self._vector_store is not None and self._vector_store.available:
-            # Group removed_ids by group_id
-            by_group: dict[str, list[str]] = {}
-            for e in self._entries:
-                pass  # We already removed them from _entries
-            # Need to get group_id from removed entries; iterate original list
-            for e in self._entries + new_entries:
-                pass
-            # Simpler: just clear and re-add remaining entries for affected groups
             affected_groups = {e.group_id for e in self._entries + new_entries}
             for gid in affected_groups:
                 self._vector_store.clear_group(gid)
@@ -303,9 +234,6 @@ class DiaryIndexer:
 
     def clear(self) -> None:
         self._entries.clear()
-        if self._vector_store is not None and self._vector_store.available:
-            # Cannot clear all groups easily; just reinitialize
-            pass
 
 
 class DiaryRetriever:
@@ -333,7 +261,6 @@ class DiaryRetriever:
 
         selected: list[DiaryEntry] = []
         total_chars = 0
-        # Rough budget: 800 tokens ≈ 1200 chars (mixed CJK/Latin)
         char_budget = int(max_tokens_budget * 1.5)
 
         for entry, score in results:
@@ -344,3 +271,6 @@ class DiaryRetriever:
             total_chars += added_chars
 
         return selected
+
+
+__all__ = ["DiaryIndexer", "DiaryRetriever"]
