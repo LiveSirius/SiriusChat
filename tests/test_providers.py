@@ -6,14 +6,10 @@
 
 from __future__ import annotations
 
-from email.message import Message as EmailMessage
-import functools
-import io
 import json
 import logging
 from pathlib import Path
-from unittest.mock import patch
-from urllib import error
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
@@ -28,35 +24,12 @@ from sirius_chat.providers.volcengine_ark import VolcengineArkProvider
 from sirius_chat.providers.ytea import YTeaProvider
 
 
-# ---------------------------------------------------------------------------
-# 共享 fixture
-# ---------------------------------------------------------------------------
-
-class _FakeResponse:
-    def __init__(self, payload: dict[str, object]) -> None:
-        self._raw = json.dumps(payload).encode("utf-8")
-
-    def read(self) -> bytes:
-        return self._raw
-
-    def __enter__(self) -> "_FakeResponse":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Provider 注册表：每个 provider 的差异化参数
-# ---------------------------------------------------------------------------
-
 _PROVIDER_SPECS: list[dict] = [
     {
         "id": "openai_compatible",
         "cls": OpenAICompatibleProvider,
         "init": {"base_url": "https://api.openai.com", "api_key": "test-key"},
         "model": "gpt-4o-mini",
-        "patch_target": "sirius_chat.providers.openai_compatible.urllib_request.urlopen",
         "expected_url": "https://api.openai.com/v1/chat/completions",
         "has_reasoning": False,
         "thinking_defaults": {},
@@ -66,7 +39,6 @@ _PROVIDER_SPECS: list[dict] = [
         "cls": AliyunBailianProvider,
         "init": {"api_key": "test-key"},
         "model": "qwen-plus",
-        "patch_target": "sirius_chat.providers.openai_compatible.urllib_request.urlopen",
         "expected_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         "has_reasoning": True,
         "thinking_defaults": {"enable_thinking": False},
@@ -76,7 +48,6 @@ _PROVIDER_SPECS: list[dict] = [
         "cls": DeepSeekProvider,
         "init": {"api_key": "test-key"},
         "model": "deepseek-chat",
-        "patch_target": "sirius_chat.providers.openai_compatible.urllib_request.urlopen",
         "expected_url": "https://api.deepseek.com/chat/completions",
         "has_reasoning": True,
         "thinking_defaults": {"thinking": {"type": "disabled"}},
@@ -86,7 +57,6 @@ _PROVIDER_SPECS: list[dict] = [
         "cls": BigModelProvider,
         "init": {"api_key": "test-key"},
         "model": "glm-4.6v",
-        "patch_target": "sirius_chat.providers.openai_compatible.urllib_request.urlopen",
         "expected_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
         "has_reasoning": True,
         "thinking_defaults": {"thinking": {"type": "disabled"}},
@@ -96,7 +66,6 @@ _PROVIDER_SPECS: list[dict] = [
         "cls": SiliconFlowProvider,
         "init": {"api_key": "test-key"},
         "model": "Pro/zai-org/GLM-4.7",
-        "patch_target": "sirius_chat.providers.openai_compatible.urllib_request.urlopen",
         "expected_url": "https://api.siliconflow.cn/v1/chat/completions",
         "has_reasoning": True,
         "thinking_defaults": {"enable_thinking": False},
@@ -106,7 +75,6 @@ _PROVIDER_SPECS: list[dict] = [
         "cls": VolcengineArkProvider,
         "init": {"api_key": "test-key"},
         "model": "doubao-seed-2-0-lite-260215",
-        "patch_target": "sirius_chat.providers.openai_compatible.urllib_request.urlopen",
         "expected_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
         "has_reasoning": True,
         "thinking_defaults": {"thinking": {"type": "disabled"}},
@@ -116,12 +84,13 @@ _PROVIDER_SPECS: list[dict] = [
         "cls": YTeaProvider,
         "init": {"api_key": "test-key"},
         "model": "gpt-4o-mini",
-        "patch_target": "sirius_chat.providers.openai_compatible.urllib_request.urlopen",
         "expected_url": "https://api.ytea.top/v1/chat/completions",
         "has_reasoning": False,
         "thinking_defaults": {},
     },
 ]
+
+_PATCH_TARGET = "sirius_chat.providers.openai_compatible.httpx.AsyncClient"
 
 
 def _make_request(model: str, *, timeout_seconds: float | None = None) -> GenerationRequest:
@@ -133,21 +102,24 @@ def _make_request(model: str, *, timeout_seconds: float | None = None) -> Genera
     )
 
 
-_OPENAI_COMPATIBLE_SPECS = [
-    spec
-    for spec in _PROVIDER_SPECS
-    if spec["patch_target"] == "sirius_chat.providers.openai_compatible.urllib_request.urlopen"
-]
-
-
 def _ids(specs: list[dict]) -> list[str]:
     return [s["id"] for s in specs]
 
 
-@functools.lru_cache(maxsize=128)
-def _parse_payload(called_request) -> dict:
-    """Cache payload parsing to avoid repeated json.loads in parametric tests."""
-    return json.loads(called_request.data.decode("utf-8"))
+def _create_mock_response(json_data: dict, status_code: int = 200) -> MagicMock:
+    mock_response = MagicMock()
+    mock_response.status_code = status_code
+    mock_response.text = json.dumps(json_data)
+    mock_response.json.return_value = json_data
+    mock_response.headers = {"Content-Type": "application/json"}
+    return mock_response
+
+
+def _build_mock_client(mock_response: MagicMock) -> MagicMock:
+    mock_client = MagicMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post = AsyncMock(return_value=mock_response)
+    return mock_client
 
 
 # ---------------------------------------------------------------------------
@@ -156,59 +128,64 @@ def _parse_payload(called_request) -> dict:
 
 
 @pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
-def test_provider_returns_plain_content(spec: dict) -> None:
+@pytest.mark.asyncio
+async def test_provider_returns_plain_content(spec: dict) -> None:
     provider = spec["cls"](**spec["init"])
-    with patch(spec["patch_target"]) as mocked:
-        mocked.return_value = _FakeResponse(
-            {"choices": [{"message": {"content": "  文本内容  "}}]}
-        )
-        output = provider.generate(_make_request(spec["model"]))
+    mock_client = _build_mock_client(
+        _create_mock_response({"choices": [{"message": {"content": "  文本内容  "}}]})
+    )
+    with patch(_PATCH_TARGET, return_value=mock_client):
+        output = await provider.generate_async(_make_request(spec["model"]))
     assert output == "文本内容"
 
 
 @pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
-def test_provider_uses_correct_default_endpoint(spec: dict) -> None:
+@pytest.mark.asyncio
+async def test_provider_uses_correct_default_endpoint(spec: dict) -> None:
     provider = spec["cls"](**spec["init"])
-    with patch(spec["patch_target"]) as mocked:
-        mocked.return_value = _FakeResponse(
-            {"choices": [{"message": {"content": "ok"}}]}
-        )
-        provider.generate(_make_request(spec["model"]))
-    called_request = mocked.call_args[0][0]
-    assert called_request.full_url == spec["expected_url"]
+    mock_client = _build_mock_client(
+        _create_mock_response({"choices": [{"message": {"content": "ok"}}]})
+    )
+    with patch(_PATCH_TARGET, return_value=mock_client):
+        await provider.generate_async(_make_request(spec["model"]))
+    mock_client.post.assert_called_once()
+    assert mock_client.post.call_args[0][0] == spec["expected_url"]
 
 
 @pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
-def test_provider_applies_expected_thinking_defaults(spec: dict) -> None:
+@pytest.mark.asyncio
+async def test_provider_applies_expected_thinking_defaults(spec: dict) -> None:
     provider = spec["cls"](**spec["init"])
-    with patch(spec["patch_target"]) as mocked:
-        mocked.return_value = _FakeResponse(
-            {"choices": [{"message": {"content": "ok"}}]}
-        )
-        provider.generate(_make_request(spec["model"]))
-
-    called_request = mocked.call_args[0][0]
-    payload = _parse_payload(called_request)
+    mock_client = _build_mock_client(
+        _create_mock_response({"choices": [{"message": {"content": "ok"}}]})
+    )
+    with patch(_PATCH_TARGET, return_value=mock_client):
+        await provider.generate_async(_make_request(spec["model"]))
+    body = mock_client.post.call_args[1]["content"]
+    payload = json.loads(body.decode("utf-8"))
     thinking_defaults = spec["thinking_defaults"]
     if thinking_defaults:
         for key, value in thinking_defaults.items():
             assert payload[key] == value
         return
-
     assert "enable_thinking" not in payload
     assert "thinking" not in payload
 
 
 @pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
-def test_provider_debug_log_includes_actual_url_and_metadata(caplog: pytest.LogCaptureFixture, spec: dict) -> None:
+@pytest.mark.asyncio
+async def test_provider_debug_log_includes_actual_url_and_metadata(
+    caplog: pytest.LogCaptureFixture, spec: dict
+) -> None:
     provider = spec["cls"](**spec["init"])
-    logger_name = str(spec["patch_target"]).removesuffix(".urllib_request.urlopen")
-    with caplog.at_level(logging.DEBUG, logger=logger_name), patch(spec["patch_target"]) as mocked:
-        mocked.return_value = _FakeResponse(
-            {"choices": [{"message": {"content": "ok"}}]}
-        )
-        provider.generate(_make_request(spec["model"], timeout_seconds=12.5))
-
+    mock_client = _build_mock_client(
+        _create_mock_response({"choices": [{"message": {"content": "ok"}}]})
+    )
+    with (
+        caplog.at_level(logging.DEBUG, logger="sirius_chat.providers.openai_compatible"),
+        patch(_PATCH_TARGET, return_value=mock_client),
+    ):
+        await provider.generate_async(_make_request(spec["model"], timeout_seconds=12.5))
     assert spec["expected_url"] in caplog.text
     assert '"timeout_seconds": 12.5' in caplog.text
     assert '"payload"' in caplog.text
@@ -216,36 +193,41 @@ def test_provider_debug_log_includes_actual_url_and_metadata(caplog: pytest.LogC
 
 
 @pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
-def test_provider_uses_request_timeout_override(spec: dict) -> None:
+@pytest.mark.asyncio
+async def test_provider_uses_request_timeout_override(spec: dict) -> None:
     provider = spec["cls"](**spec["init"])
-    with patch(spec["patch_target"]) as mocked:
-        mocked.return_value = _FakeResponse(
-            {"choices": [{"message": {"content": "ok"}}]}
-        )
-        provider.generate(_make_request(spec["model"], timeout_seconds=95.0))
-    assert mocked.call_args.kwargs["timeout"] == 95.0
+    mock_client = _build_mock_client(
+        _create_mock_response({"choices": [{"message": {"content": "ok"}}]})
+    )
+    with patch(_PATCH_TARGET, return_value=mock_client) as MockCls:
+        await provider.generate_async(_make_request(spec["model"], timeout_seconds=95.0))
+    assert MockCls.call_args[1]["timeout"] == 95.0
 
 
 @pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
-def test_provider_falls_back_to_provider_timeout(spec: dict) -> None:
+@pytest.mark.asyncio
+async def test_provider_falls_back_to_provider_timeout(spec: dict) -> None:
     init = dict(spec["init"])
     init["timeout_seconds"] = 41
     provider = spec["cls"](**init)
-    with patch(spec["patch_target"]) as mocked:
-        mocked.return_value = _FakeResponse(
-            {"choices": [{"message": {"content": "ok"}}]}
-        )
-        provider.generate(_make_request(spec["model"]))
-    assert mocked.call_args.kwargs["timeout"] == 41.0
+    mock_client = _build_mock_client(
+        _create_mock_response({"choices": [{"message": {"content": "ok"}}]})
+    )
+    with patch(_PATCH_TARGET, return_value=mock_client) as MockCls:
+        await provider.generate_async(_make_request(spec["model"]))
+    assert MockCls.call_args[1]["timeout"] == 41.0
 
 
-def test_bigmodel_provider_normalizes_root_base_url() -> None:
+@pytest.mark.asyncio
+async def test_bigmodel_provider_normalizes_root_base_url() -> None:
     provider = BigModelProvider(api_key="test-key", base_url="https://open.bigmodel.cn")
-    with patch("sirius_chat.providers.openai_compatible.urllib_request.urlopen") as mocked:
-        mocked.return_value = _FakeResponse({"choices": [{"message": {"content": "ok"}}]})
-        provider.generate(_make_request("glm-4.6v"))
-    called_request = mocked.call_args[0][0]
-    assert called_request.full_url == "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+    mock_client = _build_mock_client(
+        _create_mock_response({"choices": [{"message": {"content": "ok"}}]})
+    )
+    with patch(_PATCH_TARGET, return_value=mock_client):
+        await provider.generate_async(_make_request("glm-4.6v"))
+    mock_client.post.assert_called_once()
+    assert mock_client.post.call_args[0][0] == "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 
 
 # ---------------------------------------------------------------------------
@@ -254,29 +236,31 @@ def test_bigmodel_provider_normalizes_root_base_url() -> None:
 
 
 @pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
-def test_provider_accepts_structured_content_list(spec: dict) -> None:
+@pytest.mark.asyncio
+async def test_provider_accepts_structured_content_list(spec: dict) -> None:
     provider = spec["cls"](**spec["init"])
-    with patch(spec["patch_target"]) as mocked:
-        mocked.return_value = _FakeResponse(
+    mock_client = _build_mock_client(_create_mock_response({
+        "choices": [
             {
-                "choices": [
-                    {
-                        "message": {
-                            "content": [
-                                {"type": "text", "text": "段落A"},
-                                {"type": "text", "text": "段落B"},
-                            ]
-                        }
-                    }
-                ]
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "段落A"},
+                        {"type": "text", "text": "段落B"},
+                    ]
+                }
             }
-        )
-        output = provider.generate(_make_request(spec["model"]))
+        ]
+    }))
+    with patch(_PATCH_TARGET, return_value=mock_client):
+        output = await provider.generate_async(_make_request(spec["model"]))
     assert output == "段落A\n段落B"
 
 
-@pytest.mark.parametrize("spec", _OPENAI_COMPATIBLE_SPECS, ids=_ids(_OPENAI_COMPATIBLE_SPECS))
-def test_provider_converts_local_image_path_to_data_url(spec: dict, tmp_path: Path) -> None:
+@pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
+@pytest.mark.asyncio
+async def test_provider_converts_local_image_path_to_data_url(
+    spec: dict, tmp_path: Path
+) -> None:
     provider = spec["cls"](**spec["init"])
     image_path = tmp_path / "sample.png"
     image_path.write_bytes(b"fake-png-bytes")
@@ -293,36 +277,34 @@ def test_provider_converts_local_image_path_to_data_url(spec: dict, tmp_path: Pa
             }
         ],
     )
-
-    with patch(spec["patch_target"]) as mocked:
-        mocked.return_value = _FakeResponse({"choices": [{"message": {"content": "ok"}}]})
-        provider.generate(request)
-
-    called_request = mocked.call_args[0][0]
-    payload = _parse_payload(called_request)
+    mock_client = _build_mock_client(
+        _create_mock_response({"choices": [{"message": {"content": "ok"}}]})
+    )
+    with patch(_PATCH_TARGET, return_value=mock_client):
+        await provider.generate_async(request)
+    body = mock_client.post.call_args[1]["content"]
+    payload = json.loads(body.decode("utf-8"))
     image_url = payload["messages"][1]["content"][1]["image_url"]["url"]
     assert image_url.startswith("data:image/png;base64,")
 
 
-@pytest.mark.parametrize("spec", _OPENAI_COMPATIBLE_SPECS, ids=_ids(_OPENAI_COMPATIBLE_SPECS))
-def test_provider_surfaces_multimodal_download_hint(spec: dict) -> None:
+@pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
+@pytest.mark.asyncio
+async def test_provider_surfaces_multimodal_download_hint(spec: dict) -> None:
     provider = spec["cls"](**spec["init"])
-    details = (
-        '{"error":{"message":"<400> InternalError.Algo.InvalidParameter: '
-        'Failed to download multimodal content","type":"invalid_request_error"}}'
-    ).encode("utf-8")
-    http_error = error.HTTPError(
-        spec["expected_url"],
-        400,
-        "Bad Request",
-        hdrs=EmailMessage(),
-        fp=io.BytesIO(details),
-    )
-
-    with patch(spec["patch_target"], side_effect=http_error):
+    error_response = MagicMock()
+    error_response.status_code = 400
+    error_response.text = json.dumps({
+        "error": {
+            "message": "<400> InternalError.Algo.InvalidParameter: Failed to download multimodal content",
+            "type": "invalid_request_error",
+        }
+    })
+    error_response.headers = {"Content-Type": "application/json"}
+    mock_client = _build_mock_client(error_response)
+    with patch(_PATCH_TARGET, return_value=mock_client):
         with pytest.raises(RuntimeError) as exc_info:
-            provider.generate(_make_request(spec["model"]))
-
+            await provider.generate_async(_make_request(spec["model"]))
     message = str(exc_info.value)
     assert "多模态文件下载失败" in message
     assert "Content-Type" in message
@@ -330,13 +312,14 @@ def test_provider_surfaces_multimodal_download_hint(spec: dict) -> None:
 
 
 @pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
-def test_provider_falls_back_to_refusal(spec: dict) -> None:
+@pytest.mark.asyncio
+async def test_provider_falls_back_to_refusal(spec: dict) -> None:
     provider = spec["cls"](**spec["init"])
-    with patch(spec["patch_target"]) as mocked:
-        mocked.return_value = _FakeResponse(
-            {"choices": [{"message": {"content": "", "refusal": "拒绝回答"}}]}
-        )
-        output = provider.generate(_make_request(spec["model"]))
+    mock_client = _build_mock_client(_create_mock_response(
+        {"choices": [{"message": {"content": "", "refusal": "拒绝回答"}}]}
+    ))
+    with patch(_PATCH_TARGET, return_value=mock_client):
+        output = await provider.generate_async(_make_request(spec["model"]))
     assert output == "拒绝回答"
 
 
@@ -344,31 +327,35 @@ _REASONING_SPECS = [s for s in _PROVIDER_SPECS if s["has_reasoning"]]
 
 
 @pytest.mark.parametrize("spec", _REASONING_SPECS, ids=_ids(_REASONING_SPECS))
-def test_provider_falls_back_to_reasoning_content(spec: dict) -> None:
+@pytest.mark.asyncio
+async def test_provider_falls_back_to_reasoning_content(spec: dict) -> None:
     provider = spec["cls"](**spec["init"])
-    with patch(spec["patch_target"]) as mocked:
-        mocked.return_value = _FakeResponse(
+    mock_client = _build_mock_client(_create_mock_response({
+        "choices": [
             {
-                "choices": [
-                    {
-                        "message": {
-                            "content": "",
-                            "reasoning_content": "  推理结果  ",
-                        }
-                    }
-                ]
+                "message": {
+                    "content": "",
+                    "reasoning_content": "  推理结果  ",
+                }
             }
-        )
-        output = provider.generate(_make_request(spec["model"]))
+        ]
+    }))
+    with patch(_PATCH_TARGET, return_value=mock_client):
+        output = await provider.generate_async(_make_request(spec["model"]))
     assert output == "推理结果"
 
 
 @pytest.mark.parametrize("spec", _PROVIDER_SPECS, ids=_ids(_PROVIDER_SPECS))
-def test_provider_raises_on_network_failure(spec: dict) -> None:
+@pytest.mark.asyncio
+async def test_provider_raises_on_network_failure(spec: dict) -> None:
+    from httpx import ConnectError
+
     provider = spec["cls"](**spec["init"])
-    with patch(spec["patch_target"], side_effect=error.URLError("timeout")):
+    mock_client = _build_mock_client(MagicMock())
+    mock_client.post.side_effect = ConnectError("timeout")
+    with patch(_PATCH_TARGET, return_value=mock_client):
         with pytest.raises(RuntimeError):
-            provider.generate(_make_request(spec["model"]))
+            await provider.generate_async(_make_request(spec["model"]))
 
 
 # ---------------------------------------------------------------------------
@@ -377,12 +364,11 @@ def test_provider_raises_on_network_failure(spec: dict) -> None:
 
 
 class TestMockProvider:
-    def test_consumes_predefined_responses(self) -> None:
+    @pytest.mark.asyncio
+    async def test_consumes_predefined_responses(self) -> None:
         provider = MockProvider(responses=["x", "y"])
         req = _make_request("mock-model")
-        assert provider.generate(req) == "x"
-        assert provider.generate(req) == "y"
-        assert provider.generate(req).startswith("[mock]")
+        assert await provider.generate_async(req) == "x"
+        assert await provider.generate_async(req) == "y"
+        assert (await provider.generate_async(req)).startswith("[mock]")
         assert len(provider.requests) == 3
-
-

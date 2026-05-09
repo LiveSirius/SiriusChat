@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import logging
 from typing import cast
-from urllib import error, request as urllib_request
+
+import httpx
 
 from sirius_chat.providers.base import (
+    AsyncLLMProvider,
     build_chat_completion_payload,
     build_generation_debug_context,
     GenerationRequest,
-    LLMProvider,
     prepare_openai_compatible_messages,
     resolve_generation_timeout_seconds,
     set_last_generation_usage,
@@ -19,7 +20,7 @@ from sirius_chat.providers.response_utils import extract_assistant_text
 logger = logging.getLogger(__name__)
 
 
-class OpenAICompatibleProvider(LLMProvider):
+class OpenAICompatibleProvider(AsyncLLMProvider):
     """OpenAI-compatible provider backed by /v1/chat/completions."""
 
     _provider_name = "openai-compatible"
@@ -32,7 +33,7 @@ class OpenAICompatibleProvider(LLMProvider):
     def _build_url(self, request: GenerationRequest) -> str:
         return f"{self._base_url}/v1/chat/completions"
 
-    def generate(self, request: GenerationRequest) -> str:
+    async def generate_async(self, request: GenerationRequest) -> str:
         timeout_seconds = resolve_generation_timeout_seconds(request, self._timeout_seconds)
         url = self._build_url(request)
         debug_context = build_generation_debug_context(
@@ -62,47 +63,38 @@ class OpenAICompatibleProvider(LLMProvider):
             f"[模型调用详情] {request.model} | 请求详情:\n"
             f"{json.dumps({**debug_context, **transport_stats, 'request_body_bytes': len(body), 'payload': payload}, ensure_ascii=False, indent=2)}"
         )
-        req = urllib_request.Request(
-            url=url,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._api_key}",
-            },
-            method="POST",
-        )
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
 
         try:
-            with urllib_request.urlopen(req, timeout=timeout_seconds) as response:
-                status_code = getattr(response, "status", None)
-                content_type = str(getattr(response, "headers", {}).get("Content-Type", "")).strip()
-                raw = response.read().decode("utf-8")
-        except error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                response = await client.post(url, content=body, headers=headers)
+                status_code = response.status_code
+                content_type = str(response.headers.get("Content-Type", "")).strip()
+                raw = response.text
+        except httpx.HTTPError as exc:
             logger.error(
                 f"[模型调用失败] {request.model} | Provider: {self._provider_name} | URL: {url} "
-                f"| HTTP {exc.code}: {details[:100]}"
+                f"| httpx 异常: {exc}"
             )
-            message = f"提供商 HTTP 错误 {exc.code}：{details}"
-            if exc.code == 400 and "Failed to download multimodal content" in details:
+            raise RuntimeError(f"提供商请求异常：{exc}") from exc
+
+        if status_code >= 400:
+            logger.error(
+                f"[模型调用失败] {request.model} | Provider: {self._provider_name} | URL: {url} "
+                f"| HTTP {status_code}: {raw[:500]}"
+            )
+            message = f"提供商 HTTP 错误 {status_code}：{raw[:200]}"
+            if status_code == 400 and "Failed to download multimodal content" in raw:
                 message = (
                     f"{message}。多模态文件下载失败：请确认 image_url 使用公网可访问的 http/https URL，"
                     "且响应头包含 Content-Type 与 Content-Length；若传入的是本地图片路径，"
                     "请直接传本地文件路径让框架自动转换为 data URL，或自行传入 data:*;base64,...。"
                 )
-            raise RuntimeError(message) from exc
-        except error.URLError as exc:
-            logger.error(
-                f"[模型调用失败] {request.model} | Provider: {self._provider_name} | URL: {url} "
-                f"| 网络错误: {exc.reason}"
-            )
-            raise RuntimeError(f"提供商网络错误：{exc.reason}") from exc
-        except (ConnectionError, TimeoutError) as exc:
-            logger.error(
-                f"[模型调用失败] {request.model} | Provider: {self._provider_name} | URL: {url} "
-                f"| 连接被远程关闭或超时: {exc}"
-            )
-            raise RuntimeError(f"提供商连接异常：{exc}") from exc
+            raise RuntimeError(message)
 
         logger.debug(
             f"[模型原始响应] {request.model} | Provider: {self._provider_name} | URL: {url} "
@@ -132,7 +124,6 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             raise RuntimeError("提供商响应内容为空。")
 
-        # Pass real token usage back to the engine tracker
         usage = data.get("usage")
         if usage and isinstance(usage, dict):
             set_last_generation_usage(dict(usage))

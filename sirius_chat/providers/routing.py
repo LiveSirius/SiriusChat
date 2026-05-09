@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sirius_chat.providers.aliyun_bailian import AliyunBailianProvider
-from sirius_chat.providers.base import GenerationRequest, LLMProvider
+from sirius_chat.providers.base import AsyncLLMProvider, GenerationRequest, LLMProvider
 from sirius_chat.providers.bigmodel import BigModelProvider
 from sirius_chat.providers.deepseek import DeepSeekProvider
 from sirius_chat.providers.openai_compatible import OpenAICompatibleProvider
@@ -283,8 +283,8 @@ class WorkspaceProviderManager:
     def remove(self, provider_type: str) -> bool:
         return self._registry.remove(provider_type)
 
-    def probe(self) -> None:
-        run_provider_detection_flow(providers=self.load())
+    async def probe(self) -> None:
+        await run_provider_detection_flow(providers=self.load())
 
 
 def merge_provider_sources(
@@ -326,7 +326,7 @@ def merge_provider_sources(
     return merged
 
 
-class AutoRoutingProvider(LLMProvider):
+class AutoRoutingProvider(AsyncLLMProvider):
     """Choose a configured provider automatically on each generation request."""
 
     def __init__(self, providers: dict[str, ProviderConfig]) -> None:
@@ -381,7 +381,7 @@ class AutoRoutingProvider(LLMProvider):
             f"无法为模型 '{model}' 找到合适的提供商。请确保在 provider_keys.json 或配置中的 'models' 列表中包含了该模型。"
         )
 
-    def generate(self, request: GenerationRequest) -> str:
+    async def generate_async(self, request: GenerationRequest) -> str:
         selected, matched_by = self._pick_provider(request.model)
         logger.debug(
             "[Provider路由] model=%s | purpose=%s | provider_type=%s | matched_by=%s | base_url=%s | healthcheck_model=%s | models=%s",
@@ -395,32 +395,17 @@ class AutoRoutingProvider(LLMProvider):
         )
         provider = self._create_provider(selected)
         self._last_provider_name = getattr(provider, "_provider_name", selected.provider_type)
-        return provider.generate(request)
-
-    async def generate_async(self, request: GenerationRequest) -> str:
-        import asyncio
-        from sirius_chat.providers.base import get_last_generation_usage, set_last_generation_usage
-
-        result: dict[str, Any] = {}
-
-        def _generate() -> str:
-            reply = self.generate(request)
-            result["usage"] = get_last_generation_usage()
-            return reply
-
-        reply = await asyncio.to_thread(_generate)
-        set_last_generation_usage(result.get("usage"))
-        return reply
+        return await provider.generate_async(request)
 
 
-def probe_provider_availability(
+async def probe_provider_availability(
     *,
-    provider: LLMProvider,
+    provider: AsyncLLMProvider,
     model_name: str,
 ) -> None:
     """Run a minimal generation request to verify provider connectivity and credentials."""
 
-    content = provider.generate(
+    content = await provider.generate_async(
         GenerationRequest(
             model=model_name,
             system_prompt=_PROVIDER_HEALTHCHECK_SYSTEM_PROMPT,
@@ -456,7 +441,7 @@ def _create_provider_from_config(config: ProviderConfig) -> LLMProvider:
     return OpenAICompatibleProvider(api_key=config.api_key, base_url=config.base_url or "https://api.openai.com")
 
 
-def run_provider_detection_flow(
+async def run_provider_detection_flow(
     *,
     providers: dict[str, ProviderConfig],
 ) -> None:
@@ -478,10 +463,10 @@ def run_provider_detection_flow(
             raise RuntimeError(f"provider 缺少 healthcheck_model：{provider_type}")
 
         provider = _create_provider_from_config(config)
-        probe_provider_availability(provider=provider, model_name=config.healthcheck_model)
+        await probe_provider_availability(provider=provider, model_name=config.healthcheck_model)
 
 
-def register_provider_with_validation(
+async def register_provider_with_validation(
     *,
     work_path: Path,
     provider_type: str,
@@ -506,7 +491,7 @@ def register_provider_with_validation(
         enabled=True,
     )
     provider = _create_provider_from_config(config)
-    probe_provider_availability(provider=provider, model_name=model_name)
+    await probe_provider_availability(provider=provider, model_name=model_name)
 
     ProviderRegistry(work_path).upsert(
         provider_type=normalized_provider_type,
