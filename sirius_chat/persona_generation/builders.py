@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, cast
 
-from sirius_chat.config import Agent, OrchestrationPolicy, SessionConfig
+from sirius_chat.config import Agent, SessionConfig
 from sirius_chat.providers.base import AsyncLLMProvider, GenerationRequest, LLMProvider
 from sirius_chat.persona_generation.templates import (
     DependencyFileSnapshot,
@@ -19,27 +19,19 @@ from sirius_chat.persona_generation.templates import (
     PreparedPersonaGenerationInput,
     RolePlayAnswer,
     _format_answers,
-    _generated_agents_file_path,
-    _generated_agent_trace_dir_path,
-    _generated_agent_trace_read_dir_path,
-    _generation_trace_file_path,
-    _generation_trace_read_file_path,
-    _load_generation_trace_payload,
     _load_library_full,
-    _load_pending_persona_specs,
-    _load_persona_generation_traces_raw,
     _normalize_agent_key,
     _normalize_dependency_file_path,
     _parse_max_tokens,
     _parse_temperature,
-    _persona_spec_to_dict,
+    _persist_pending_persona_spec,
     _preset_to_dict,
     _resolve_dependency_file_path,
+    _resolve_persisted_persona_spec,
     _save_generated_agent_library,
     _save_pending_persona_generation_trace,
     _save_persona_generation_trace,
-    _trace_to_dict,
-    _write_generation_trace_payload,
+    persist_generated_agent_profile,
 )
 
 ROLEPLAY_GENERATION_MAX_TOKENS_DEFAULT = 5120
@@ -104,6 +96,18 @@ def _looks_like_roleplay_json_response(raw: str) -> bool:
         or '"agent_persona"' in normalized
         or '"global_system_prompt"' in normalized
     )
+
+
+def _extract_json_payload(raw: str) -> dict[str, object] | None:
+    """尝试从 LLM 原始响应中提取完整 JSON 对象，失败返回 None。"""
+    candidate = _strip_wrapped_json_code_fence(raw)
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+        return None
+    except (json.JSONDecodeError, ValueError):
+        return None
 
 
 def _decode_json_string_fragment(fragment: str) -> str:
