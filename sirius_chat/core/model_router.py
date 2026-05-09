@@ -109,7 +109,6 @@ class ModelRouter:
         *,
         urgency: int = 0,
         heat_level: str = "warm",
-        user_communication_style: str = "",
     ) -> TaskConfig:
         """Resolve the best config for a task, considering urgency and context.
 
@@ -117,7 +116,6 @@ class ModelRouter:
             - urgency > 80: upgrade to stronger model, lower temperature
             - urgency > 95: strongest model, more tokens
             - heat=overheated: reduce max_tokens by 50%
-            - user style=concise: cap max_tokens at 80
         """
         base = self._registry.get(task_name)
         if base is None:

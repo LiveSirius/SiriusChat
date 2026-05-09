@@ -97,10 +97,6 @@ class SkillEngineContextImpl:
     def persist_group_state(self, group_id: str) -> None:
         self._engine._persist_group_state(group_id)
 
-    def get_user_communication_style(self, group_id: str, user_id: str) -> str:
-        profile = self._engine.semantic_memory.get_global_user_profile(user_id)
-        return getattr(profile, "communication_style", "") if profile else ""
-
     def get_skill_descriptions(self, caller_is_developer: bool = False) -> str:
         from sirius_chat.core.prompt_factory import PromptFactory
         return PromptFactory.build_skill_descriptions(

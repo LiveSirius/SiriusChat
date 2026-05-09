@@ -746,7 +746,6 @@ class _EmotionalGroupChatEngineBase:
         style_params: StyleParams | None = None,
         task_name: str = "response_generate",
         urgency: int = 0,
-        user_communication_style: str = "",
         token_breakdown: dict[str, int] | None = None,
     ) -> str:
         """调用 LLM provider 生成回复。
@@ -779,7 +778,6 @@ class _EmotionalGroupChatEngineBase:
             task_name,
             urgency=urgency,
             heat_level=rhythm.heat_level,
-            user_communication_style=user_communication_style,
         )
 
         # 应用风格参数（覆盖路由器的 max_tokens）

@@ -312,12 +312,9 @@ async def _generate_reminder_message(
             skill_desc=skill_desc,
         )
 
-        user_comm_style = ctx.get_user_communication_style(group_id, user_id)
-
         raw_reply = await ctx.generate_text(
             system_prompt, messages, group_id,
             task_name="proactive_generate",
-            user_communication_style=user_comm_style,
         )
         reply = strip_skill_calls(raw_reply).strip()
         if reply:

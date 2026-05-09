@@ -28,19 +28,6 @@ class TestStyleAdapter:
         assert style.max_tokens > 128
         assert style.max_tokens <= 1600
 
-    def test_user_concise_override(self):
-        adapter = StyleAdapter()
-        style = adapter.adapt(heat_level="warm", pace="steady", user_communication_style="concise")
-        assert style.max_tokens <= 80
-        assert "1-2句话" in style.length_instruction
-        assert style.temperature == 0.5
-
-    def test_user_casual_increases_temperature(self):
-        adapter = StyleAdapter()
-        style = adapter.adapt(heat_level="warm", pace="steady", user_communication_style="casual")
-        assert style.temperature == 0.8
-        assert "轻松随意" in style.tone_instruction
-
     def test_overheated_very_short(self):
         adapter = StyleAdapter()
         style = adapter.adapt(heat_level="overheated", pace="accelerating")
@@ -101,15 +88,15 @@ class TestPromptFactoryAssemble:
         assert "轻松幽默" in bundle.system_prompt
         assert "群里氛围" in bundle.system_prompt
 
-    def test_assemble_with_user_profile_concise(self):
+    def test_assemble_with_user_profile(self):
         from sirius_chat.models.persona import PersonaProfile
         persona = PersonaProfile(name="TestBot")
         msg = Message(role="human", content="test", speaker="u1")
         emotion = EmotionState(valence=0.0, arousal=0.0, intensity=0.0)
         adapter = StyleAdapter()
-        style = adapter.adapt(heat_level="warm", pace="steady", user_communication_style="concise")
+        style = adapter.adapt(heat_level="warm", pace="steady")
 
-        user = UserSemanticProfile(user_id="u1", communication_style="concise")
+        user = UserSemanticProfile(user_id="u1")
         group = GroupSemanticProfile(group_id="g1")
 
         bundle = PromptFactory.assemble_immediate(
@@ -123,7 +110,8 @@ class TestPromptFactoryAssemble:
             other_ai_names=[],
         )
 
-        assert "1-2句话" in bundle.system_prompt
+        assert bundle.system_prompt
+        assert "test" in bundle.user_content
 
     def test_assemble_delayed(self):
         from sirius_chat.models.persona import PersonaProfile

@@ -319,10 +319,6 @@ class SkillEngineContext(Protocol):
         """持久化指定群组的运行时状态。"""
         ...
 
-    def get_user_communication_style(self, group_id: str, user_id: str) -> str:
-        """获取用户的沟通风格。"""
-        ...
-
     def get_skill_descriptions(self, caller_is_developer: bool = False) -> str:
         """获取当前可用的 SKILL 描述文本（用于注入 prompt）。"""
         ...

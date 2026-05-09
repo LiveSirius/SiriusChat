@@ -500,10 +500,8 @@ class BackgroundTasksMixin:
         sub_bd.memory = estimate_tokens(system_prompt) - sub_bd.persona
         sub_bd.total = estimate_tokens(system_prompt)
 
-        user_comm_style = getattr(user_profile, "communication_style", "") if user_profile else ""
         raw_reply = await self._generate(
             system_prompt, messages, group_id, style,
-            user_communication_style=user_comm_style,
             token_breakdown=sub_bd.to_dict(),
         )
         reply = raw_reply.strip()
@@ -790,20 +788,9 @@ class BackgroundTasksMixin:
         _any_partial_sent = False
         last_round_had_partial = False
 
-        # Determine user communication style from the triggered batch
-        resolved_uid = None
-        for item in triggered:
-            uid = getattr(item, "user_id", None)
-            if uid:
-                resolved_uid = uid
-                break
-        user_profile = self.semantic_memory.get_user_profile(group_id, resolved_uid) if resolved_uid else None
-        user_comm_style = getattr(user_profile, "communication_style", "") if user_profile else ""
-
         for _round in range(max_skill_rounds + 1):
             raw_reply = await self._generate(
                 system_prompt, messages, group_id,
-                user_communication_style=user_comm_style,
                 token_breakdown=token_breakdown,
             )
             reply = raw_reply.strip()
