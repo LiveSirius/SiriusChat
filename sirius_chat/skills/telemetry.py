@@ -23,6 +23,8 @@ class SkillExecutionRecord:
     duration_ms: float
     error: str = ""
     caller_user_id: str = ""
+    params: dict[str, Any] | None = None
+    result_summary: str = ""
 
 
 class SkillTelemetry:
@@ -78,6 +80,8 @@ class SkillTelemetry:
                             duration_ms=data.get("duration_ms", 0.0),
                             error=data.get("error", ""),
                             caller_user_id=data.get("caller_user_id", ""),
+                            params=data.get("params"),
+                            result_summary=data.get("result_summary", ""),
                         )
                     )
                     if len(results) >= limit:

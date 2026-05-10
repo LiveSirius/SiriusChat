@@ -8,7 +8,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sirius_chat.core.engine_core import _EmotionalGroupChatEngineBase
+
+    class _Base(_EmotionalGroupChatEngineBase): ...
+else:
+    _Base = object
 
 from sirius_chat.core.identity_resolver import IdentityContext
 from sirius_chat.models.emotion import EmotionState
@@ -19,7 +26,7 @@ from sirius_chat.models.response_strategy import ResponseStrategy, StrategyDecis
 logger = logging.getLogger(__name__)
 
 
-class PipelineMixin:
+class PipelineMixin(_Base):
     """Mixin providing pipeline stage methods for EmotionalGroupChatEngine."""
 
     # ==================================================================
@@ -595,9 +602,15 @@ class PipelineMixin:
                 if not file_path:
                     logger.warning("表情包学习跳过: file_path 为空, item=%s", item)
                     continue
-                # Generate a stable sticker_id from file_path
+                # Generate a stable sticker_id from file_path.
+                # file_path from _cache_image is already content-based:
+                #   {cache_dir}/{content_hash}{ext}
+                # Extract the content hash from the filename for stability.
                 import hashlib
-                sticker_id = hashlib.md5(file_path.encode()).hexdigest()
+                from pathlib import Path
+                path_obj = Path(file_path)
+                # Filename is like "a1b2c3d4.jpg" -> extract "a1b2c3d4" as sticker_id
+                sticker_id = path_obj.stem if path_obj.stem else hashlib.md5(file_path.encode()).hexdigest()
                 caption = intent.image_caption or ""
                 trigger_message = getattr(message, "content", "") or ""
                 trigger_emotion = getattr(intent, "emotion", "") or ""

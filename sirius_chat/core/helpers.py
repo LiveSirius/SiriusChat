@@ -7,14 +7,21 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sirius_chat.core.engine_core import _EmotionalGroupChatEngineBase
+
+    class _Base(_EmotionalGroupChatEngineBase): ...
+else:
+    _Base = object
 
 from sirius_chat.memory.glossary import GlossaryTerm
 
 logger = logging.getLogger(__name__)
 
 
-class HelpersMixin:
+class HelpersMixin(_Base):
     """Mixin providing helper methods for EmotionalGroupChatEngine."""
 
     # ==================================================================

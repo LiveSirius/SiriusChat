@@ -300,6 +300,7 @@ class SkillExecutor:
                     caller_id = ""
                     if invocation_context is not None:
                         caller_id = getattr(invocation_context, "caller_user_id", "") or ""
+                    summary = skill_result.to_display_text()[:500] if skill_result.success else ""
                     self._telemetry.record(
                         SkillExecutionRecord(
                             skill_name=skill.name,
@@ -308,6 +309,8 @@ class SkillExecutor:
                             duration_ms=round(duration_ms, 2),
                             error=skill_result.error if not skill_result.success else "",
                             caller_user_id=caller_id,
+                            params=params if params else None,
+                            result_summary=summary,
                         )
                     )
                 except Exception:
@@ -463,16 +466,26 @@ class SkillExecutor:
                     break
 
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-            try:
-                self._telemetry.record(
-                    skill_name=skill.name,
-                    success=skill_result.success,
-                    duration_ms=elapsed_ms,
-                    error=skill_result.error if not skill_result.success else None,
-                    caller_user_id=invocation_context.caller if invocation_context else None,
-                )
-            except Exception:
-                pass
+            if skill_result is not None:
+                try:
+                    caller_id = ""
+                    if invocation_context is not None:
+                        caller_id = getattr(invocation_context, "caller_user_id", "") or getattr(invocation_context, "caller", "") or ""
+                    summary = skill_result.to_display_text()[:500] if skill_result.success else ""
+                    self._telemetry.record(
+                        SkillExecutionRecord(
+                            skill_name=skill.name,
+                            timestamp=time.time(),
+                            success=skill_result.success,
+                            duration_ms=elapsed_ms,
+                            error=skill_result.error if not skill_result.success else "",
+                            caller_user_id=caller_id,
+                            params=params if params else None,
+                            result_summary=summary,
+                        )
+                    )
+                except Exception:
+                    pass
 
             # Record into chain context so subsequent skills can reference this result
             if chain_context is not None and skill_result is not None:

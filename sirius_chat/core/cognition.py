@@ -748,6 +748,8 @@ class CognitionAnalyzer:
                 "image_caption": cached_caption,
             }
 
+        if self.provider_async is None:
+            return None
         if hasattr(self.provider_async, "generate_async"):
             raw = await self.provider_async.generate_async(request)
         elif isinstance(self.provider_async, LLMProvider):
@@ -1323,9 +1325,15 @@ class CognitionAnalyzer:
         second_person = rule_scores.get("second_person_score", 0.0)
         question = rule_scores.get("question_score", 0.0)
         imperative = rule_scores.get("imperative_score", 0.0)
+        turn_taking = rule_scores.get("turn_taking_score", 0.0)
 
         # Strong linguistic signals: name match or imperative patterns
         strong_linguistic = max(name_match, imperative)
+
+        # Turn-taking + second person: user is continuing conversation with AI
+        # e.g. "那你推荐一下" after AI just replied → strong directed signal
+        if turn_taking >= 0.5 and second_person >= 0.2:
+            strong_linguistic = max(strong_linguistic, turn_taking * 0.7)
         # Weak linguistic signals: "你" or question alone (not sufficient without name)
         weak_linguistic = max(second_person, question)
 

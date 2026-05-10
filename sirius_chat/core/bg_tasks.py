@@ -9,7 +9,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sirius_chat.core.engine_core import _EmotionalGroupChatEngineBase
+
+    class _Base(_EmotionalGroupChatEngineBase): ...
+else:
+    _Base = object
 
 from sirius_chat.core.delayed_response_queue import _parse_iso
 from sirius_chat.core.events import SessionEvent, SessionEventType
@@ -19,7 +26,7 @@ from sirius_chat.skills.executor import strip_skill_calls
 logger = logging.getLogger(__name__)
 
 
-class BackgroundTasksMixin:
+class BackgroundTasksMixin(_Base):
     """Mixin providing background task methods for EmotionalGroupChatEngine."""
 
     # ==================================================================
@@ -252,6 +259,8 @@ class BackgroundTasksMixin:
                         purpose="diary_consolidate",
                     )
                     t0 = time.perf_counter()
+                    if self.provider_async is None:
+                        continue
                     raw = await self.provider_async.generate_async(request)
                     consolidate_duration_ms = round((time.perf_counter() - t0) * 1000, 2)
 
@@ -342,6 +351,7 @@ class BackgroundTasksMixin:
             system_prompt=bundle.system_prompt,
             search_query=bundle.user_content or "",
             recent_n=10,
+            include_pending=True,
         )
         system_prompt = msgs[0]["content"]
         messages = msgs[1:]
@@ -713,6 +723,7 @@ class BackgroundTasksMixin:
             )
             triggered[0] = item
 
+        resolved_uid: str | None = None
         if item.channel and item.channel_user_id:
             resolved_uid = self.user_manager.resolve_user_id(
                 platform=item.channel,
@@ -755,6 +766,7 @@ class BackgroundTasksMixin:
             system_prompt=bundle.system_prompt,
             search_query=bundle.user_content,
             recent_n=10,
+            include_pending=True,
         )
         system_prompt = msgs[0]["content"]
         messages = msgs[1:]
@@ -790,6 +802,9 @@ class BackgroundTasksMixin:
         partial_replies: list[str] = []
         _any_partial_sent = False
         last_round_had_partial = False
+        _round = 0
+        calls: list[tuple[str, dict[str, Any]]] = []
+        reply = ""
 
         for _round in range(max_skill_rounds + 1):
             raw_reply = await self._generate(
@@ -850,7 +865,7 @@ class BackgroundTasksMixin:
                     err = f"SKILL '{skill_name}' 未找到"
                     logger.warning(err)
                     if not all_silent:
-                        skill_results.append(PromptFactory.build_skill_status_message(err))
+                        skill_results.append(PromptFactory.build_skill_status_message("未找到", skill_name))
                     continue
                 # Engagement-based permission: low-engagement non-developers cannot invoke skills
                 if caller_engagement < 0.1 and not caller_is_developer:
