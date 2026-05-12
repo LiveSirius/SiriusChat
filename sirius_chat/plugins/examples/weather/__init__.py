@@ -27,11 +27,12 @@ class WeatherPlugin(PluginBase):
 
     @command(
         "weather",
-        patterns=["/天气", "查天气", "天气怎么样"],
+        prefix="/",
+        patterns=["天气", "weather"],
         pattern_type="prefix",
         render_mode="llm",
         description="查询城市天气",
-        examples=["/天气 北京", "查天气 上海"],
+        examples=["/天气 北京", "/weather Shanghai"],
         system_prompt_suffix="请以关心的语气告诉用户天气情况，提醒注意穿衣和出行。",
         max_tokens=300,
         temperature=0.8,

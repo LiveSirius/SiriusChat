@@ -67,7 +67,7 @@ class PluginRegistry:
         if instance is not None:
             self._instances[definition.name] = instance
 
-        # 构建指令索引
+        # 构建指令索引（从 plugin.json 的 triggers.commands）
         for cmd_name, pattern, pat_type in definition.all_patterns:
             self._commands_index.append((pattern, pat_type, definition.name, cmd_name))
 
@@ -89,6 +89,35 @@ class PluginRegistry:
             len(definition.commands),
             len(definition.events),
         )
+
+    def sync_command_metas(self, plugin_name: str, command_metas: dict[str, object]) -> None:
+        """从 PluginBase 实例同步 @command 装饰器元数据到指令索引。
+
+        Args:
+            plugin_name: Plugin 名称
+            command_metas: {command_name: PluginCommandMeta} 字典
+        """
+        # 移除该插件的旧索引条目
+        self._commands_index = [
+            (p, pt, pn, cn) for p, pt, pn, cn in self._commands_index if pn != plugin_name
+        ]
+        # 重新添加（从 plugin.json 的 triggers.commands）
+        definition = self._definitions.get(plugin_name)
+        if definition is not None:
+            for cmd_name, pattern, pat_type in definition.all_patterns:
+                self._commands_index.append((pattern, pat_type, plugin_name, cmd_name))
+        # 添加 @command 装饰器的模式
+        for meta in command_metas.values():
+            if not hasattr(meta, 'full_patterns'):
+                continue
+            for pattern in meta.full_patterns:  # full_patterns 已包含 prefix
+                self._commands_index.append((
+                    pattern,
+                    getattr(meta, 'pattern_type', 'prefix'),
+                    plugin_name,
+                    getattr(meta, 'name', ''),
+                ))
+        logger.debug("同步 %s 的 @command 元数据: %d 条指令", plugin_name, len(command_metas))
 
     def get(self, name: str) -> "PluginDefinition | None":
         """按名称获取 PluginDefinition。"""

@@ -55,7 +55,8 @@ class PluginCommandMeta:
     """
 
     name: str                              # 指令名（对应 CommandAST.command）
-    patterns: list[str] = field(default_factory=list)          # 触发词列表
+    prefix: str = field(default="")        # 指令前缀（如 "/"、"#"），空串表示无前缀
+    patterns: list[str] = field(default_factory=list)          # 触发词列表（不含前缀）
     pattern_type: str = "prefix"           # prefix | keyword | regex
     render_mode: str = "direct"            # direct | llm | silent
     description: str = ""                  # 人类可读的描述
@@ -74,6 +75,17 @@ class PluginCommandMeta:
         """是否为异步 handler。"""
         return self.handler_is_async
 
+    @property
+    def full_patterns(self) -> list[str]:
+        """返回带前缀的完整触发词列表。
+
+        如果设置了 prefix，将其自动拼接到每个 pattern 前面。
+        例如 prefix="/" + patterns=["天气", "weather"] → ["/天气", "/weather"]
+        """
+        if not self.prefix:
+            return list(self.patterns)
+        return [self.prefix + p for p in self.patterns]
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # @command 装饰器
@@ -82,6 +94,7 @@ class PluginCommandMeta:
 def command(
     name: str,
     *,
+    prefix: str = "",
     patterns: list[str] | None = None,
     pattern_type: str = "prefix",
     render_mode: str = "direct",
@@ -98,9 +111,13 @@ def command(
 
     Args:
         name: 指令名（如 "weather"），映射到 CommandAST.command
-        patterns: 触发词列表（如 ["/天气", "查天气"]）
+        prefix: 指令前缀（如 "/"、"#"、"!" 等），默认 "" 表示无前缀。
+                设置后会自动拼接到每个 pattern 前面，
+                例如 prefix="/" + patterns=["天气"] → 实际匹配 "/天气"
+        patterns: 触发词列表（如 ["天气", "查天气"]），不含前缀
         pattern_type: 匹配模式类型 ("prefix" | "keyword" | "regex")
-        render_mode: 输出策略 ("direct" | "llm" | "silent")
+        render_mode: 输出策略 ("direct" | "llm" | "silent")。
+                     单个 handler 执行过程中可通过 PluginResult.render_mode 覆写。
         description: 指令描述文本
         examples: 使用示例列表
         system_prompt_suffix: LLM 模式下追加到 system prompt 的文本
@@ -135,6 +152,7 @@ def command(
     """
     meta = PluginCommandMeta(
         name=name,
+        prefix=prefix,
         patterns=patterns or [name],
         pattern_type=pattern_type,
         render_mode=render_mode,
@@ -201,6 +219,7 @@ def discover_commands(instance: object) -> dict[str, PluginCommandMeta]:
             bound = getattr(instance, attr_name)
             meta = PluginCommandMeta(
                 name=meta.name,
+                prefix=meta.prefix,
                 patterns=list(meta.patterns),
                 pattern_type=meta.pattern_type,
                 render_mode=meta.render_mode,
@@ -225,8 +244,8 @@ def discover_commands(instance: object) -> dict[str, PluginCommandMeta]:
 
 # 类型注解 → 转换函数 映射
 _TYPE_COERCERS: dict[type, Any] = {
-    int: lambda v: int(v) if v is not None else 0,
-    float: lambda v: float(v) if v is not None else 0.0,
+    int: lambda v: int(v) if v is not None else None,
+    float: lambda v: float(v) if v is not None else None,
     bool: lambda v: str(v).lower() in ("true", "1", "yes") if v is not None else False,
     str: lambda v: str(v) if v is not None else "",
 }

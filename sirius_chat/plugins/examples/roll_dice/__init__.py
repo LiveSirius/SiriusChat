@@ -27,11 +27,12 @@ class RollDicePlugin(PluginBase):
 
     @command(
         "roll_dice",
-        patterns=["#roll", "/roll", "掷骰", "roll"],
+        prefix="#",
+        patterns=["roll"],
         pattern_type="prefix",
         render_mode="direct",
         description="掷骰子",
-        examples=["#roll 2d6+3", "/roll d20"],
+        examples=["#roll 2d6+3", "#roll d20"],
     )
     def do_roll(self, expression: str) -> PluginResult:
         """掷骰子指令。

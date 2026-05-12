@@ -87,6 +87,14 @@ class PluginExecutor:
         except Exception as exc:
             logger.warning("Plugin %s on_load 失败: %s", definition.name, exc)
 
+        # 同步 @command 装饰器元数据到注册表索引
+        try:
+            command_metas = instance.get_command_metas()
+            if command_metas:
+                self._registry.sync_command_metas(definition.name, command_metas)
+        except Exception as exc:
+            logger.debug("同步 @command 元数据失败: %s", exc)
+
         logger.info("实例化 Plugin: %s", definition.name)
         return instance
 
