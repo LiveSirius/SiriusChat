@@ -36,20 +36,13 @@ class EngineProxy:
         """调用引擎的 _generate() 生成人格化文本。
 
         走完整的框架生成链路：模型路由、token 记录、人格注入、语气对齐。
-        不直接调用 provider，确保 Plugin 输出进入记忆链和 token 统计。
         """
-        if self._engine is None:
-            return f"[Engine 未绑定] {prompt[:100]}"
-        try:
-            return await self._engine._generate(
-                system_prompt=prompt,
-                messages=[],
-                group_id=group_id,
-                task_name="plugin_generate",
-            )
-        except Exception as exc:
-            logger.error("Plugin %s 调用 _generate 失败: %s", self._plugin_name, exc)
-            return f"[生成失败: {exc}]"
+        return await self._engine._generate(
+            system_prompt=prompt,
+            messages=[],
+            group_id=group_id,
+            task_name="plugin_generate",
+        )
 
     def get_persona_name(self) -> str:
         """获取当前人格名称。"""
@@ -118,7 +111,7 @@ class AdapterProxy:
     设计原则：
         - 每个方法都是轻量代理，直接委托给底层 Adapter
         - 参数签名与底层 Adapter 保持一致，便于跨平台适配
-        - 新平台只需实现相同方法签名即可接入
+        - Plugin 强依赖 Engine → Adapter 绑定链，不做空值守卫
     """
 
     def __init__(self) -> None:
@@ -135,15 +128,7 @@ class AdapterProxy:
     async def send_group_msg(
         self, group_id: str, content: str, *, at_user: str | None = None
     ) -> dict[str, Any]:
-        """发送群聊消息。
-
-        Args:
-            group_id: 群号
-            content: 消息文本（支持 CQ 码，如 [CQ:at,qq=xxx]）
-            at_user: 需要 @ 的用户 QQ 号（可选，自动拼 CQ 码）
-        """
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
+        """发送群聊消息。"""
         if at_user:
             content = f"[CQ:at,qq={at_user}] {content}"
         return await self._adapter.send_group_msg(group_id, content)
@@ -152,16 +137,12 @@ class AdapterProxy:
         self, user_id: str, content: str
     ) -> dict[str, Any]:
         """发送私聊消息。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.send_private_msg(user_id, content)
 
     async def send_group_image(
         self, group_id: str, file_path: str
     ) -> dict[str, Any]:
         """发送群聊图片。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         segment = f"[CQ:image,file=file://{file_path}]"
         return await self._adapter.send_group_msg(group_id, segment)
 
@@ -169,8 +150,6 @@ class AdapterProxy:
         self, user_id: str, file_path: str
     ) -> dict[str, Any]:
         """发送私聊图片。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         segment = f"[CQ:image,file=file://{file_path}]"
         return await self._adapter.send_private_msg(user_id, segment)
 
@@ -178,36 +157,26 @@ class AdapterProxy:
 
     async def delete_msg(self, message_id: str) -> dict[str, Any]:
         """撤回消息。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.call_api("delete_msg", {"message_id": int(message_id)})
 
     # ── 群信息 ──
 
     async def get_group_member_list(self, group_id: str) -> list[dict[str, Any]]:
         """获取群成员列表。"""
-        if self._adapter is None:
-            return []
         return await self._adapter.get_group_member_list(group_id)
 
     async def get_group_member_info(
         self, group_id: str, user_id: str, no_cache: bool = False
     ) -> dict[str, Any]:
         """获取单个群成员信息（昵称、群名片、权限等）。"""
-        if self._adapter is None:
-            return {}
         return await self._adapter.get_group_member_info(group_id, user_id, no_cache=no_cache)
 
     async def get_group_info(self, group_id: str) -> dict[str, Any]:
         """获取群信息（群名称、成员数等）。"""
-        if self._adapter is None:
-            return {}
         return await self._adapter.get_group_info(group_id)
 
     async def get_stranger_info(self, user_id: str) -> dict[str, Any]:
         """获取陌生人信息（QQ昵称等）。"""
-        if self._adapter is None:
-            return {}
         return await self._adapter.get_stranger_info(user_id)
 
     # ── 群管理 ──
@@ -216,8 +185,6 @@ class AdapterProxy:
         self, group_id: str, user_id: str, reject_add_request: bool = False
     ) -> dict[str, Any]:
         """踢出群成员。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.call_api(
             "set_group_kick",
             {"group_id": int(group_id), "user_id": int(user_id),
@@ -228,8 +195,6 @@ class AdapterProxy:
         self, group_id: str, user_id: str, duration: int = 1800
     ) -> dict[str, Any]:
         """禁言群成员（duration 秒，0 表示解除）。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.call_api(
             "set_group_ban",
             {"group_id": int(group_id), "user_id": int(user_id), "duration": duration},
@@ -237,8 +202,6 @@ class AdapterProxy:
 
     async def set_group_whole_ban(self, group_id: str, enable: bool = True) -> dict[str, Any]:
         """全员禁言。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.call_api(
             "set_group_whole_ban", {"group_id": int(group_id), "enable": enable}
         )
@@ -247,8 +210,6 @@ class AdapterProxy:
         self, group_id: str, user_id: str, enable: bool = True
     ) -> dict[str, Any]:
         """设置/取消群管理员。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.call_api(
             "set_group_admin",
             {"group_id": int(group_id), "user_id": int(user_id), "enable": enable},
@@ -258,8 +219,6 @@ class AdapterProxy:
         self, group_id: str, user_id: str, card: str = ""
     ) -> dict[str, Any]:
         """设置群成员名片。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.call_api(
             "set_group_card",
             {"group_id": int(group_id), "user_id": int(user_id), "card": card},
@@ -267,8 +226,6 @@ class AdapterProxy:
 
     async def set_group_name(self, group_id: str, name: str) -> dict[str, Any]:
         """设置群名称。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.call_api(
             "set_group_name", {"group_id": int(group_id), "group_name": name}
         )
@@ -279,24 +236,18 @@ class AdapterProxy:
         self, group_id: str, file_path: str, name: str = "", folder: str = ""
     ) -> dict[str, Any]:
         """上传文件到群文件。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.upload_group_file(group_id, file_path, name)
 
     async def upload_private_file(
         self, user_id: str, file_path: str, name: str = ""
     ) -> dict[str, Any]:
         """上传文件到私聊。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.upload_private_file(user_id, file_path, name)
 
     # ── 通用 API ──
 
     async def call_api(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """调用适配器的通用 API（用于未封装的 OneBot 动作）。"""
-        if self._adapter is None:
-            return {"status": "error", "message": "Adapter 未绑定"}
         return await self._adapter.call_api(action, params)
 
 

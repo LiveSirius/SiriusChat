@@ -59,7 +59,7 @@ class OutputDispatcher:
             return ""
 
         if render_mode.value == "direct":
-            return self._handle_direct(result, definition, adapter=adapter, group_id=group_id, user_id=user_id)
+            return self._handle_direct(result, definition)
 
         if render_mode.value == "llm":
             return await self._handle_llm(
@@ -69,9 +69,7 @@ class OutputDispatcher:
                 **kwargs,
             )
 
-        # 未知模式，fallback 到 direct
-        logger.warning("Plugin %s: 未知 render_mode=%s，fallback 到 direct", definition.name, render_mode.value)
-        return self._handle_direct(result, definition, adapter=adapter, group_id=group_id, user_id=user_id)
+        raise ValueError(f"Plugin {definition.name}: 未知 render_mode={render_mode.value}")
 
     # ── 各模式处理 ──
 
@@ -79,10 +77,6 @@ class OutputDispatcher:
         self,
         result: "PluginResponse",
         definition: "PluginDefinition",
-        *,
-        adapter: Any = None,
-        group_id: str = "",
-        user_id: str = "",
     ) -> str:
         """Direct 模式：直接使用 result.text。"""
         text = result.text
@@ -97,7 +91,7 @@ class OutputDispatcher:
         result: "PluginResponse",
         definition: "PluginDefinition",
         *,
-        engine: Any = None,
+        engine: Any,
         adapter: Any = None,
         group_id: str = "",
         user_id: str = "",
@@ -108,13 +102,7 @@ class OutputDispatcher:
         使用 engine._generate() 而非直接调用 provider，
         确保经过模型路由、token 记录、语气对齐等完整框架链路。
         """
-        if engine is None:
-            logger.warning("Plugin %s: LLM 模式但无引擎可用，降级到 direct", definition.name)
-            return self._handle_direct(result, definition, adapter=adapter, group_id=group_id, user_id=user_id)
-
         system_prompt = self._build_plugin_system_prompt(result, definition, engine)
-        if not system_prompt:
-            return self._handle_direct(result, definition, adapter=adapter, group_id=group_id, user_id=user_id)
 
         try:
             generated = await engine._generate(
@@ -126,7 +114,7 @@ class OutputDispatcher:
             return generated if generated else result.text
         except Exception as exc:
             logger.error("Plugin %s: 引擎生成失败: %s", definition.name, exc)
-            return self._handle_direct(result, definition, adapter=adapter, group_id=group_id, user_id=user_id)
+            return result.text
 
     @staticmethod
     def _build_plugin_system_prompt(
