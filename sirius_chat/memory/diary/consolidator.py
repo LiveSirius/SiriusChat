@@ -7,6 +7,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sirius_chat.memory.diary.indexer import DiaryIndexer
@@ -40,6 +41,48 @@ class DiaryConsolidator:
         self.threshold = float(self.config.get("diary_merge_similarity_threshold", 0.82))
         self.min_entries = int(self.config.get("diary_consolidation_min_entries", 3))
         self.max_cluster_size = int(self.config.get("diary_consolidation_max_cluster_size", 8))
+        self._cache_path: Path | None = None
+        store = getattr(manager, "_store", None)
+        if store is not None:
+            base = getattr(store, "_base_dir", None)
+            if base is not None:
+                self._cache_path = Path(base) / "sim_cache.json"
+        self._sim_cache: dict[tuple[str, str], float] = self._load_cache()
+
+    @staticmethod
+    def _cache_key(id_a: str, id_b: str) -> tuple[str, str]:
+        """生成规范化的 pair key，保证 (a,b) == (b,a)。"""
+        return (id_a, id_b) if id_a < id_b else (id_b, id_a)
+
+    def _evict_cache(self, entry_ids: set[str]) -> None:
+        """清除缓存中涉及指定 entry_id 的所有条目。"""
+        to_remove = [k for k in self._sim_cache if k[0] in entry_ids or k[1] in entry_ids]
+        for k in to_remove:
+            del self._sim_cache[k]
+        if to_remove:
+            self._save_cache()
+
+    def _load_cache(self) -> dict[tuple[str, str], float]:
+        """从磁盘加载相似度缓存。"""
+        if self._cache_path is None or not self._cache_path.exists():
+            return {}
+        try:
+            data = json.loads(self._cache_path.read_text(encoding="utf-8"))
+            return {tuple(k.split("|", 1)): v for k, v in data.items()}
+        except (OSError, json.JSONDecodeError, ValueError):
+            return {}
+
+    def _save_cache(self) -> None:
+        """将相似度缓存持久化到磁盘。"""
+        if self._cache_path is None:
+            return
+        data = {f"{k[0]}|{k[1]}": v for k, v in self._sim_cache.items()}
+        tmp = self._cache_path.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(self._cache_path)
+        except OSError:
+            pass
 
     def find_clusters(self, group_id: str) -> list[list[DiaryEntry]]:
         """Find groups of similar diary entries for *group_id*.
@@ -60,16 +103,27 @@ class DiaryConsolidator:
 
         n = len(indexed)
 
-        # Pre-compute similarity matrix for strict pair-wise clustering
+        # 构建相似度矩阵，优先使用缓存；缓存未命中时计算并写入缓存
+        new_computed = False
         sim_matrix: list[list[float]] = [[0.0] * n for _ in range(n)]
         for i in range(n):
             for j in range(i + 1, n):
-                sim = DiaryIndexer._cosine_sim(
-                    indexed[i][1].embedding or [],
-                    indexed[j][1].embedding or [],
-                )
+                key = self._cache_key(indexed[i][1].entry_id, indexed[j][1].entry_id)
+                cached = self._sim_cache.get(key)
+                if cached is not None:
+                    sim = cached
+                else:
+                    sim = DiaryIndexer._cosine_sim(
+                        indexed[i][1].embedding or [],
+                        indexed[j][1].embedding or [],
+                    )
+                    self._sim_cache[key] = sim
+                    new_computed = True
                 sim_matrix[i][j] = sim
                 sim_matrix[j][i] = sim
+
+        if new_computed:
+            self._save_cache()
 
         clusters: list[list[DiaryEntry]] = []
         used: set[int] = set()
@@ -171,6 +225,8 @@ class DiaryConsolidator:
         kept = [e for e in entries if e.entry_id not in clustered_ids]
         new_entries = kept + merged
         self.manager.replace_entries(group_id, new_entries)
+        # 清除被合并条目的缓存，新条目会在下轮 find_clusters 时计算并缓存
+        self._evict_cache(clustered_ids)
         logger.info(
             "Diary consolidation for %s: merged %d clusters into %d entries, kept %d",
             group_id,

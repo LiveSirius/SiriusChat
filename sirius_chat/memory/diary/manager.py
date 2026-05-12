@@ -249,12 +249,28 @@ class DiaryManager:
         return [e for e in self._indexer.list_all() if e.group_id == group_id]
 
     def replace_entries(self, group_id: str, new_entries: list[DiaryEntry]) -> None:
-        """Replace all entries for a group (used after consolidation)."""
-        # Remove old entries for this group from indexer
+        """Replace all entries for a group (used after consolidation).
+
+        Batch-clears the in-memory index and vector store for this group,
+        then adds all new entries in one pass to avoid O(n²) ChromaDB writes.
+        """
+        # 1. Remove old in-memory entries for this group
         old = self._store.load(group_id)
+        old_source_ids: set[str] = set()
         for e in old:
-            self._indexer.remove_by_source_ids(set(e.source_ids))
-        # Add new entries
+            old_source_ids.update(e.source_ids)
+        self._indexer._entries = [
+            e for e in self._indexer._entries if e.group_id != group_id
+        ]
+
+        # 2. Clear vector store for this group once (instead of per-entry)
+        vs = self._indexer._vector_store
+        if vs is not None and vs.available:
+            vs.clear_group(group_id)
+
+        # 3. Add new entries (embedding + vector store) in one pass
         for e in new_entries:
             self._indexer.add(e)
+
+        # 4. Persist to disk
         self._store.save(group_id, new_entries)

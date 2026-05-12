@@ -243,7 +243,7 @@ class BackgroundTasksMixin(_Base):
 
         for group_id in list(self._group_last_message_at.keys()):
             try:
-                clusters = consolidator.find_clusters(group_id)
+                clusters = await asyncio.to_thread(consolidator.find_clusters, group_id)
                 if not clusters:
                     continue
 
@@ -285,7 +285,9 @@ class BackgroundTasksMixin(_Base):
                         merged_entries.append(entry)
 
                 if merged_entries:
-                    consolidator.rebuild_entries(group_id, clusters, merged_entries)
+                    await asyncio.to_thread(
+                        consolidator.rebuild_entries, group_id, clusters, merged_entries
+                    )
                     self._log_inner_thought(
                         f"整理了 {len(clusters)} 组相似日记，合并成 {len(merged_entries)} 条喵~"
                     )
