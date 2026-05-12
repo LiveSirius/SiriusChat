@@ -129,7 +129,7 @@ class HelpersMixin(_Base):
             speaker_name=getattr(message, 'speaker', ''),
         )
 
-        # 执行 Plugin（返回 list[PluginResult]，支持流式多输出）
+        # 执行 Plugin（返回 list[PluginResponse]，支持流式多输出）
         results = await self._plugin_executor.execute(
             plugin_name,
             cmd,

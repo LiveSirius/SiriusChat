@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 from datetime import datetime
 
-from sirius_chat.plugins import PluginBase, PluginResult, CommandAST
+from sirius_chat.plugins import PluginBase, PluginResponse, CommandAST
 
 
 class DailyPushPlugin(PluginBase):
@@ -21,14 +21,14 @@ class DailyPushPlugin(PluginBase):
     def on_load(self) -> None:
         self.logger.info("每日推送插件已加载")
 
-    def execute(self, cmd: CommandAST) -> PluginResult:
+    def execute(self, cmd: CommandAST) -> PluginResponse:
         """生成每日推送内容。
 
         Args:
             cmd: 命令 AST
 
         Returns:
-            PluginResult 包含推送数据结构
+            PluginResponse 包含推送数据结构
         """
         topic = cmd.get_str("topic", "daily")
 
@@ -80,7 +80,7 @@ class DailyPushPlugin(PluginBase):
             }) if self.source_path else "",
         }
 
-        return PluginResult.ok(
+        return PluginResponse.ok(
             text=f"{greeting}！今天是{date_str}，{selected_tip}",
             data=push_data,
             mood_hint="温暖、活泼、元气满满",

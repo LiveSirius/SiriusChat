@@ -1,9 +1,9 @@
-"""Plugin 执行器 —— 权限校验、参数校验、调用 Plugin.execute()。
+"""Plugin 执行器 —— 权限校验、参数校验、调用 Plugin 生命周期。
 
 职责：
     1. 校验调用者权限（群组白名单/黑名单、用户白名单、速率限制）
-    2. 将 CommandAST 传递给 PluginBase.execute()
-    3. 捕获异常并生成错误 PluginResult
+    2. 将 CommandAST 传递给 PluginBase.execute_async()
+    3. 捕获异常并生成错误 PluginResponse
     4. 管理 Plugin 生命周期（on_load / on_unload）
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sirius_chat.plugins.models import CommandAST, PluginDefinition, PluginResult
+    from sirius_chat.plugins.models import CommandAST, PluginDefinition, PluginResponse
     from sirius_chat.plugins.registry import PluginRegistry
     from sirius_chat.plugins.context import PluginContext
 
@@ -125,12 +125,12 @@ class PluginExecutor:
         adapter: Any = None,
         engine: Any = None,
         message_context: Any = None,
-    ) -> list["PluginResult"]:
+    ) -> list["PluginResponse"]:
         """执行 Plugin 的核心逻辑。
 
         支持两种模式：
-            - @command 模式：返回 list[PluginResult]（单个或流式多个）
-            - 传统 execute() 模式：返回单元素 list[PluginResult]
+            - @command 模式：返回 list[PluginResponse]（单个或流式多个）
+            - 传统 execute() 模式：返回单元素 list[PluginResponse]
 
         Args:
             plugin_name: Plugin 名称
@@ -143,13 +143,13 @@ class PluginExecutor:
             message_context: 消息上下文（MessageContext）
 
         Returns:
-            list[PluginResult]（至少一个元素）
+            list[PluginResponse]（至少一个元素）
         """
-        from sirius_chat.plugins.models import PluginResult
+        from sirius_chat.plugins.models import PluginResponse
 
         definition = self._registry.get(plugin_name)
         if definition is None:
-            return [PluginResult.fail(f"Plugin 未找到: {plugin_name}")]
+            return [PluginResponse.fail(f"Plugin 未找到: {plugin_name}")]
 
         # ── 权限校验 ──
         perm_error = self._check_permissions(
@@ -158,13 +158,13 @@ class PluginExecutor:
         )
         if perm_error:
             logger.warning("Plugin %s 权限校验失败: %s", plugin_name, perm_error)
-            return [PluginResult.fail(perm_error)]
+            return [PluginResponse.fail(perm_error)]
 
         # ── 速率限制校验 ──
         rate_error = self._check_rate_limit(plugin_name, definition)
         if rate_error:
             logger.warning("Plugin %s 速率限制: %s", plugin_name, rate_error)
-            return [PluginResult.fail(rate_error)]
+            return [PluginResponse.fail(rate_error)]
 
         # ── 获取或创建实例 ──
         instance = self._registry.get_instance(plugin_name)
@@ -173,7 +173,7 @@ class PluginExecutor:
             if instance is not None:
                 self._registry.set_instance(plugin_name, instance)
         if instance is None:
-            return [PluginResult.fail(f"Plugin {plugin_name} 实例化失败")]
+            return [PluginResponse.fail(f"Plugin {plugin_name} 实例化失败")]
 
         # ── 注入运行时上下文 ──
         if hasattr(instance, '_ctx') and instance._ctx is not None:
@@ -186,8 +186,7 @@ class PluginExecutor:
 
         # ── 执行（带超时保护） ──
         try:
-            # 使用 async 执行路径
-            # execute_async 内部自动判断：@command → 调度；无 → to_thread(execute)
+            # execute_async 总是返回 list[PluginResponse]，此处无需额外类型检查
             if hasattr(instance, 'execute_async'):
                 results = await asyncio.wait_for(
                     instance.execute_async(cmd),
@@ -198,19 +197,15 @@ class PluginExecutor:
                     asyncio.to_thread(instance.execute, cmd),
                     timeout=self._default_timeout,
                 )
-                results = [raw] if raw is not None else [PluginResult.ok(text="", data=None)]
+                results = [raw] if raw is not None else [PluginResponse.ok(text="", data=None)]
 
-            if not isinstance(results, list):
-                results = [results] if results is not None else [PluginResult.ok(text="", data=None)]
-            if not results:
-                results = [PluginResult.ok(text="", data=None)]
             return results
         except asyncio.TimeoutError:
             logger.error("Plugin %s 执行超时 (%.1fs)", plugin_name, self._default_timeout)
-            return [PluginResult.fail(f"Plugin 执行超时（{self._default_timeout}秒）")]
+            return [PluginResponse.fail(f"Plugin 执行超时（{self._default_timeout}秒）")]
         except Exception as exc:
             logger.error("Plugin %s 执行异常: %s", plugin_name, exc, exc_info=True)
-            return [PluginResult.fail(f"Plugin 执行异常: {exc}")]
+            return [PluginResponse.fail(f"Plugin 执行异常: {exc}")]
 
     # ── 权限校验 ──
 

@@ -335,35 +335,41 @@ class PluginDefinition:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Plugin 执行结果
+# Plugin 响应 —— handler 返回给框架的输出契约
 # ═══════════════════════════════════════════════════════════════════════
 
 @dataclass(slots=True)
-class PluginResult:
-    """Plugin 执行结果。
+class PluginResponse:
+    """Plugin 处理器返回给框架的响应。
 
-    Plugin 的 run() 返回此结构，由 OutputDispatcher 根据 render_mode 处理。
+    这是 handler 与框架之间的核心输出契约。根据 render_mode：
+        - direct: text 直接作为最终回复发送给用户
+        - llm: data 委托给人格引擎做风格化生成
+        - silent: 无输出，仅执行副作用
+
+    Plugin 也可以通过 ctx.adapter.send_xxx() 直接调用平台 API，
+    此时仍应返回 PluginResponse 告知框架指令已处理完毕。
     """
 
     success: bool = True
-    data: Any = None                     # 结构化数据（llm 模式下用于风格化生成）
+    data: Any = None                     # 结构化数据（llm 模式下用于人格化生成）
     text: str = ""                        # 纯文本输出（direct 模式下直接发送）
     error: str = ""                       # 错误信息
-    render_mode: str = ""                 # 覆盖 plugin.json 中的 render.mode
+    render_mode: str = ""                 # 覆盖 plugin.json / @command 中的 render.mode
     mood_hint: str = ""                   # 情绪提示（用于 llm 风格化）
     tone_override: str = ""               # 语气覆写
     image_urls: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @staticmethod
-    def ok(text: str = "", data: Any = None, **kwargs: Any) -> PluginResult:
-        """快捷构造成功的 PluginResult。"""
-        return PluginResult(success=True, text=text, data=data, **kwargs)
+    def ok(text: str = "", data: Any = None, **kwargs: Any) -> PluginResponse:
+        """快捷构造成功的 PluginResponse。"""
+        return PluginResponse(success=True, text=text, data=data, **kwargs)
 
     @staticmethod
-    def fail(error: str) -> PluginResult:
-        """快捷构造失败的 PluginResult。"""
-        return PluginResult(success=False, error=error)
+    def fail(error: str) -> PluginResponse:
+        """快捷构造失败的 PluginResponse。"""
+        return PluginResponse(success=False, error=error)
 
 
 # ═══════════════════════════════════════════════════════════════════════

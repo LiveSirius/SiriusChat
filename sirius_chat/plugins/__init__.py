@@ -5,7 +5,7 @@
 公开 API:
     - PluginBase: 所有插件的基类
     - PluginContext / PluginContext: Plugin 执行上下文
-    - PluginDefinition / PluginResult / CommandAST: 核心数据模型
+    - PluginDefinition / PluginResponse / CommandAST: 核心数据模型
     - PluginRegistry: 插件注册表
     - PluginLoader: 插件加载器
     - PluginExecutor: 插件执行器
@@ -49,7 +49,7 @@ from sirius_chat.plugins.models import (
     PluginParameterDef,
     PluginPermissionDef,
     PluginRenderDef,
-    PluginResult,
+    PluginResponse,
     PluginNaturalLangDef,
     RenderMode,
     TriggerType,
@@ -66,7 +66,7 @@ __all__ = [
     "PluginBase",
     "PluginContext",
     "PluginDefinition",
-    "PluginResult",
+    "PluginResponse",
     "CommandAST",
     # 装饰器系统
     "command",

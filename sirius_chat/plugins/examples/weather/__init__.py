@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from sirius_chat.plugins import PluginBase, PluginResult, CommandAST, command
+from sirius_chat.plugins import PluginBase, PluginResponse, CommandAST, command
 
 
 class WeatherPlugin(PluginBase):
@@ -42,13 +42,13 @@ class WeatherPlugin(PluginBase):
 
         使用 async generator yield 实现渐进输出：
             1. yield "正在查询..." → 立即发送
-            2. yield PluginResult.ok(data=...) → LLM 人格化生成
+            2. yield PluginResponse.ok(data=...) → LLM 人格化生成
 
         Args:
             city: 城市名称（由框架从 CommandAST 自动注入）
         """
         if not city:
-            yield PluginResult.fail("请指定城市名称，例如：/天气 北京")
+            yield PluginResponse.fail("请指定城市名称，例如：/天气 北京")
             return
 
         # 第一步：立即告知用户正在查询
@@ -62,7 +62,7 @@ class WeatherPlugin(PluginBase):
         weather_data = self._get_mock_weather(city)
         self.logger.info("查询 %s 天气: %s", city, weather_data)
 
-        yield PluginResult.ok(
+        yield PluginResponse.ok(
             text=f"{city}天气：{weather_data['weather']}，{weather_data['temperature']}",
             data=weather_data,
             mood_hint="温暖、关心",

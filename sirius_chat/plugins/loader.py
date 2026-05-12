@@ -231,10 +231,10 @@ _PLUGINS_README = """# plugins 目录说明
 }
 
 # __init__.py
-from sirius_chat.plugins import PluginBase, PluginContext, PluginResult
+from sirius_chat.plugins import PluginBase, PluginContext, PluginResponse
 
 class HelloPlugin(PluginBase):
     def execute(self, cmd):
-        return PluginResult.ok(text="你好呀！")
+        return PluginResponse.ok(text="你好呀！")
 ```
 """

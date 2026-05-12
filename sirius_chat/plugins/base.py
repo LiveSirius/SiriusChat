@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sirius_chat.plugins.models import CommandAST, PluginResult
+    from sirius_chat.plugins.models import CommandAST, PluginResponse
     from sirius_chat.plugins.context import PluginContext
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ class PluginBase:
         class MyPlugin(PluginBase):
             def execute(self, cmd):
                 city = cmd.kwargs.get("city", ...)
-                return PluginResult.ok(text=f"city={city}")
+                return PluginResponse.ok(text=f"city={city}")
 
     2. 【装饰器方式】使用 @command 装饰器声明式注册指令（推荐）：
 
@@ -45,9 +45,9 @@ class PluginBase:
 
         class MyPlugin(PluginBase):
             @command("weather", patterns=["/天气"], render_mode="llm")
-            async def query_weather(self, city: str, unit: str = "celsius") -> PluginResult:
+            async def query_weather(self, city: str, unit: str = "celsius") -> PluginResponse:
                 data = await fetch_weather(city, unit)
-                return PluginResult.ok(data=data)
+                return PluginResponse.ok(data=data)
 
     装饰器方式的优势：
     - 每个指令一个独立方法，职责清晰
@@ -100,7 +100,7 @@ class PluginBase:
 
     # ── 核心方法 ──
 
-    def execute(self, cmd: "CommandAST") -> "PluginResult":
+    def execute(self, cmd: "CommandAST") -> "PluginResponse":
         """执行 Plugin 核心逻辑（同步入口）。
 
         默认行为：
@@ -113,9 +113,9 @@ class PluginBase:
             cmd: 从用户输入解析的命令 AST
 
         Returns:
-            PluginResult 实例
+            PluginResponse 实例
         """
-        from sirius_chat.plugins.models import PluginResult
+        from sirius_chat.plugins.models import PluginResponse
 
         # 检查是否有 @command 已发现
         if self._command_handlers is None:
@@ -123,14 +123,14 @@ class PluginBase:
         if self._command_handlers:
             # 有装饰器命令但 execute 未被覆写 → 返回未调度错误
             # （装饰器命令应通过 execute_async 异步调度）
-            return PluginResult.fail(
+            return PluginResponse.fail(
                 f"Plugin '{self._name}' 使用了 @command 装饰器但未通过异步调度。"
                 f" 请使用 execute_async() 方法。"
             )
 
-        return PluginResult.fail(f"Plugin '{self._name}' 未实现 execute() 方法")
+        return PluginResponse.fail(f"Plugin '{self._name}' 未实现 execute() 方法")
 
-    async def execute_async(self, cmd: "CommandAST") -> list["PluginResult"]:
+    async def execute_async(self, cmd: "CommandAST") -> list["PluginResponse"]:
         """执行 Plugin 核心逻辑（异步入口，v1.2+）。
 
         框架优先调用此方法。默认行为：
@@ -143,11 +143,11 @@ class PluginBase:
             cmd: 从用户输入解析的命令 AST
 
         Returns:
-            list[PluginResult]（至少一个元素）：
+            list[PluginResponse]（至少一个元素）：
             - @command 模式：调度结果（单个/流式多个）
             - 传统模式：单元素列表
         """
-        from sirius_chat.plugins.models import PluginResult
+        from sirius_chat.plugins.models import PluginResponse
 
         # 检查是否有 @command
         if self._command_handlers is None:
@@ -189,14 +189,14 @@ class PluginBase:
                 ", ".join(self._command_handlers.keys()),
             )
 
-    async def _dispatch_decorated_command(self, cmd: "CommandAST") -> list["PluginResult"]:
+    async def _dispatch_decorated_command(self, cmd: "CommandAST") -> list["PluginResponse"]:
         """将 CommandAST 路由到对应的 @command 方法并调用。
 
         Args:
             cmd: 用户命令 AST
 
         Returns:
-            list[PluginResult]（支持流式多输出）
+            list[PluginResponse]（支持流式多输出）
         """
         from sirius_chat.plugins.decorators import dispatch_command_stream
 

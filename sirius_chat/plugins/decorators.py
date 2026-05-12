@@ -8,19 +8,19 @@
 
 使用示例：
 
-    from sirius_chat.plugins import PluginBase, command, PluginResult
+    from sirius_chat.plugins import PluginBase, command, PluginResponse
 
     class WeatherPlugin(PluginBase):
         @command("weather", patterns=["/天气", "查天气"], render_mode="llm",
                  description="查询城市天气")
-        async def query_weather(self, city: str, unit: str = "celsius") -> PluginResult:
+        async def query_weather(self, city: str, unit: str = "celsius") -> PluginResponse:
             data = await self._fetch_weather(city, unit)
-            return PluginResult.ok(data=data, mood_hint="温暖关心")
+            return PluginResponse.ok(data=data, mood_hint="温暖关心")
 
         @command("forecast", patterns=["/预报"], render_mode="direct")
-        def forecast(self, city: str, days: int = 3) -> PluginResult:
+        def forecast(self, city: str, days: int = 3) -> PluginResponse:
             result = self._get_forecast(city, days)
-            return PluginResult.ok(text=result)
+            return PluginResponse.ok(text=result)
 
     # 也支持不覆写 execute()，框架自动按 cmd.command 路由
 """
@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, TypeVar, overload, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sirius_chat.plugins.models import CommandAST, PluginResult
+    from sirius_chat.plugins.models import CommandAST, PluginResponse
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ def command(
         patterns: 触发词列表（如 ["天气", "查天气"]），不含前缀
         pattern_type: 匹配模式类型 ("prefix" | "keyword" | "regex")
         render_mode: 输出策略 ("direct" | "llm" | "silent")。
-                     单个 handler 执行过程中可通过 PluginResult.render_mode 覆写。
+                     单个 handler 执行过程中可通过 PluginResponse.render_mode 覆写。
         description: 指令描述文本
         examples: 使用示例列表
         system_prompt_suffix: LLM 模式下追加到 system prompt 的文本
@@ -132,9 +132,9 @@ def command(
 
         class MyPlugin(PluginBase):
             @command("roll", patterns=["#roll", "/roll"], render_mode="direct")
-            def do_roll(self, expression: str) -> PluginResult:
+            def do_roll(self, expression: str) -> PluginResponse:
                 result = roll_dice(expression)
-                return PluginResult.ok(text=result)
+                return PluginResponse.ok(text=result)
 
     ── 类型映射规则 ──
     框架根据方法的类型注解和默认值自动进行参数校验与注入：
@@ -280,19 +280,19 @@ async def dispatch_command_stream(
     instance: object,
     cmd: "CommandAST",
     command_handlers: dict[str, "PluginCommandMeta"],
-) -> list["PluginResult"]:
+) -> list["PluginResponse"]:
     """根据 CommandAST.command 路由到对应的 @command 方法并调用。
 
     支持两种 handler 模式：
-        1. 常规 async 函数 → 返回单元素 list[PluginResult]
-        2. 流式 async generator → 遍历 yield，收集所有 PluginResult
+        1. 常规 async 函数 → 返回单元素 list[PluginResponse]
+        2. 流式 async generator → 遍历 yield，收集所有 PluginResponse
 
-    流式 handler 可以中途 `yield` 字符串/PluginResult 做即时输出：
+    流式 handler 可以中途 `yield` 字符串/PluginResponse 做即时输出：
         @command("search", prefix="/", patterns=["search"])
         async def search(self, query: str):
             yield "正在搜索..."           # 立即发送（direct 模式）
             data = await self._fetch(query)
-            yield PluginResult.ok(data=data, render_mode="llm")  # 人格化
+            yield PluginResponse.ok(data=data, render_mode="llm")  # 人格化
 
     Args:
         instance: PluginBase 子类实例
@@ -300,13 +300,13 @@ async def dispatch_command_stream(
         command_handlers: {command_name: PluginCommandMeta} 映射
 
     Returns:
-        list[PluginResult]（至少一个元素）
+        list[PluginResponse]（至少一个元素）
     """
-    from sirius_chat.plugins.models import PluginResult
+    from sirius_chat.plugins.models import PluginResponse
 
     meta = command_handlers.get(cmd.command)
     if meta is None or meta.handler is None:
-        return [PluginResult.fail(
+        return [PluginResponse.fail(
             f"Plugin '{getattr(instance, '_name', '?')}' 未定义指令 '{cmd.command}' 的处理器"
         )]
 
@@ -316,7 +316,7 @@ async def dispatch_command_stream(
     try:
         sig = inspect.signature(handler)
     except (ValueError, TypeError) as exc:
-        return [PluginResult.fail(f"无法解析处理器签名: {exc}")]
+        return [PluginResponse.fail(f"无法解析处理器签名: {exc}")]
 
     bound_args: dict[str, Any] = {}
     for param_name, param in sig.parameters.items():
@@ -333,7 +333,7 @@ async def dispatch_command_stream(
         elif param.default is not inspect.Parameter.empty:
             bound_args[param_name] = param.default
         else:
-            return [PluginResult.fail(
+            return [PluginResponse.fail(
                 f"指令 '{cmd.command}' 缺少必填参数 '{param_name}'"
             )]
 
@@ -351,17 +351,17 @@ async def _invoke_handler(
     bound_args: dict[str, Any],
     meta: "PluginCommandMeta",
     instance: object,
-) -> list["PluginResult"]:
-    """调用 handler 并归一化为 list[PluginResult]。
+) -> list["PluginResponse"]:
+    """调用 handler 并归一化为 list[PluginResponse]。
 
     自动检测 handler 类型：
         - async generator → 遍历 yield，打包每个产出
         - async function → 单次调用，打包返回
         - sync function → asyncio.to_thread 执行，打包返回
     """
-    from sirius_chat.plugins.models import PluginResult
+    from sirius_chat.plugins.models import PluginResponse
 
-    results: list[PluginResult] = []
+    results: list[PluginResponse] = []
 
     try:
         if inspect.isasyncgenfunction(handler):
@@ -371,7 +371,7 @@ async def _invoke_handler(
                 pr = _normalize_stream_item(raw, meta)
                 results.append(pr)
             if not results:
-                results.append(PluginResult.ok(text="", data=None))
+                results.append(PluginResponse.ok(text="", data=None))
             return results
 
         if meta.is_async:
@@ -384,7 +384,7 @@ async def _invoke_handler(
         return results
 
     except TypeError as exc:
-        return [PluginResult.fail(f"指令 '{meta.name}' 参数类型错误: {exc}")]
+        return [PluginResponse.fail(f"指令 '{meta.name}' 参数类型错误: {exc}")]
     except Exception as exc:
         logger.error(
             "Plugin 指令处理器异常 [%s.%s]: %s",
@@ -393,30 +393,30 @@ async def _invoke_handler(
             exc,
             exc_info=True,
         )
-        return [PluginResult.fail(f"指令执行异常: {exc}")]
+        return [PluginResponse.fail(f"指令执行异常: {exc}")]
 
 
-def _normalize_stream_item(raw: Any, meta: "PluginCommandMeta") -> "PluginResult":
-    """将 handler 产出归一化为 PluginResult。
+def _normalize_stream_item(raw: Any, meta: "PluginCommandMeta") -> "PluginResponse":
+    """将 handler 产出归一化为 PluginResponse。
 
     - None → 空成功
-    - str → PluginResult.ok(text=str, render_mode="direct")
-    - PluginResult → 原样（补齐 render_mode/mood_hint）
-    - 其他 → PluginResult.ok(data=raw)
+    - str → PluginResponse.ok(text=str, render_mode="direct")
+    - PluginResponse → 原样（补齐 render_mode/mood_hint）
+    - 其他 → PluginResponse.ok(data=raw)
     """
-    from sirius_chat.plugins.models import PluginResult
+    from sirius_chat.plugins.models import PluginResponse
 
     if raw is None:
-        return PluginResult.ok(text="", data=None)
+        return PluginResponse.ok(text="", data=None)
     if isinstance(raw, str):
-        return PluginResult.ok(text=raw, render_mode="direct")
-    if isinstance(raw, PluginResult):
+        return PluginResponse.ok(text=raw, render_mode="direct")
+    if isinstance(raw, PluginResponse):
         if not raw.render_mode:
             raw.render_mode = meta.render_mode
         if not raw.mood_hint and meta.mood_hint:
             raw.mood_hint = meta.mood_hint
         return raw
-    return PluginResult.ok(data=raw, render_mode=meta.render_mode)
+    return PluginResponse.ok(data=raw, render_mode=meta.render_mode)
 
 
 # 保持旧函数名兼容

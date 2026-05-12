@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 import re
 
-from sirius_chat.plugins import PluginBase, PluginResult, command
+from sirius_chat.plugins import PluginBase, PluginResponse, command
 
 
 class RollDicePlugin(PluginBase):
@@ -34,20 +34,20 @@ class RollDicePlugin(PluginBase):
         description="掷骰子",
         examples=["#roll 2d6+3", "#roll d20"],
     )
-    def do_roll(self, expression: str) -> PluginResult:
+    def do_roll(self, expression: str) -> PluginResponse:
         """掷骰子指令。
 
         Args:
             expression: 骰子表达式（自动从 CommandAST 注入）
         """
         if not expression:
-            return PluginResult.fail("请指定骰子表达式，例如：#roll 2d6+3")
+            return PluginResponse.fail("请指定骰子表达式，例如：#roll 2d6+3")
 
         result = self._roll(expression)
         if result is None:
-            return PluginResult.fail(f"无效的骰子表达式: {expression}")
+            return PluginResponse.fail(f"无效的骰子表达式: {expression}")
 
-        return PluginResult.ok(text=result)
+        return PluginResponse.ok(text=result)
 
     def _roll(self, expression: str) -> str | None:
         """解析并掷骰子。"""

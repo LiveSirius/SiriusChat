@@ -1,8 +1,8 @@
 """Plugin 输出调度器 —— 根据 RenderMode 选择输出策略。
 
 三种输出模式：
-    - direct: 直接使用 PluginResult.text 发送给用户
-    - llm: 将 PluginResult.data 委托给引擎做人格化风格生成
+    - direct: 直接使用 PluginResponse.text 发送给用户
+    - llm: 将 PluginResponse.data 委托给引擎做人格化风格生成
     - silent: 无输出，仅执行副作用
 
 是 Plugin 执行流程的最后一环。
@@ -14,7 +14,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sirius_chat.plugins.models import PluginDefinition, PluginResult, RenderMode
+    from sirius_chat.plugins.models import PluginDefinition, PluginResponse, RenderMode
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class OutputDispatcher:
 
     async def dispatch(
         self,
-        result: "PluginResult",
+        result: "PluginResponse",
         definition: "PluginDefinition",
         *,
         engine: Any = None,
@@ -37,7 +37,7 @@ class OutputDispatcher:
         message_id: str = "",
         **kwargs: Any,
     ) -> str:
-        """调度 PluginResult 的输出。
+        """调度 PluginResponse 的输出。
 
         Args:
             result: Plugin 执行结果
@@ -51,7 +51,7 @@ class OutputDispatcher:
         Returns:
             最终发送的文本内容（silent 模式返回空字符串），失败时返回错误文本
         """
-        # 确定实际渲染模式：PluginResult 可覆盖 plugin.json 的配置
+        # 确定实际渲染模式：PluginResponse 可覆盖 plugin.json 的配置
         render_mode = self._resolve_mode(result, definition)
 
         if render_mode.value == "silent":
@@ -77,7 +77,7 @@ class OutputDispatcher:
 
     def _handle_direct(
         self,
-        result: "PluginResult",
+        result: "PluginResponse",
         definition: "PluginDefinition",
         *,
         adapter: Any = None,
@@ -94,7 +94,7 @@ class OutputDispatcher:
 
     async def _handle_llm(
         self,
-        result: "PluginResult",
+        result: "PluginResponse",
         definition: "PluginDefinition",
         *,
         engine: Any = None,
@@ -134,7 +134,7 @@ class OutputDispatcher:
 
     @staticmethod
     def _build_stylized_prompt(
-        result: "PluginResult",
+        result: "PluginResponse",
         definition: "PluginDefinition",
         *,
         engine: Any = None,
@@ -173,11 +173,11 @@ class OutputDispatcher:
     # ── 辅助 ──
 
     @staticmethod
-    def _resolve_mode(result: "PluginResult", definition: "PluginDefinition") -> "RenderMode":
+    def _resolve_mode(result: "PluginResponse", definition: "PluginDefinition") -> "RenderMode":
         """确定实际渲染模式。"""
         from sirius_chat.plugins.models import RenderMode
 
-        # PluginResult 可以覆盖配置
+        # PluginResponse 可以覆盖配置
         if result.render_mode:
             mode = result.render_mode.lower()
             if mode == "llm":
