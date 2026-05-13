@@ -48,7 +48,7 @@ Questions.md
 
 config.json
 
-napcat/
+/napcat/
 
 # 临时分析脚本
 extract_intent_analysis.py
