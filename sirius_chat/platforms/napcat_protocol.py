@@ -95,7 +95,6 @@ class ParsedEvent:
     multimodal_inputs: list[dict[str, str]] = field(default_factory=list)
 
 
-@staticmethod
 def extract_sender_names(event: dict[str, Any]) -> tuple[str, str]:
     sender = event.get("sender", {})
     nickname = str(sender.get("nickname", "") or "").strip()
@@ -103,7 +102,6 @@ def extract_sender_names(event: dict[str, Any]) -> tuple[str, str]:
     return nickname, card
 
 
-@staticmethod
 def sanitize_image_name(name: str) -> str:
     from urllib.parse import unquote
     text = unquote(str(name or "").strip().strip("'\"")).replace("\r", " ").replace("\n", " ")
@@ -111,7 +109,6 @@ def sanitize_image_name(name: str) -> str:
     return text[:80].strip()
 
 
-@staticmethod
 def extract_image_name(seg: dict[str, Any], index: int, fallback_prefix: str = "未命名图片") -> str:
     data = seg.get("data", {})
     candidates = [
@@ -136,7 +133,6 @@ def extract_image_name(seg: dict[str, Any], index: int, fallback_prefix: str = "
     return f"{fallback_prefix}_{index}"
 
 
-@staticmethod
 def dedupe_image_name(name: str, counter: dict[str, int]) -> str:
     seen = counter.get(name, 0) + 1
     counter[name] = seen
