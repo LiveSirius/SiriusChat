@@ -164,6 +164,8 @@ class HelpersMixin(_Base):
                 )
                 if dispatch_output.text is not None:
                     rendered = dispatch_output.text
+                else:
+                    rendered = ""
                 if is_last and dispatch_output.message_group is not None:
                     final_message_group = dispatch_output.message_group
             else:

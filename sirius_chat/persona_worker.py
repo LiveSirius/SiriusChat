@@ -373,7 +373,14 @@ class PersonaWorker:
         for mgr in self._napcat_managers:
             try:
                 if mgr.is_running:
-                    await mgr.stop()
+                    # Windows 下默认保留 NapCat/QQ 进程，避免杀死已登录会话导致下次需重新扫码。
+                    # 仅断开管理器引用，让 QQ 进程继续运行以实现快速登录复用。
+                    # 如需强制终止，可通过配置或手动调用 mgr.stop(force=True)。
+                    if sys.platform == "win32":
+                        LOG.info("Windows 下保留 NapCat/QQ 进程运行，以维持登录状态供下次复用")
+                        await mgr.stop(force=False, preserve_session=True)
+                    else:
+                        await mgr.stop()
             except Exception as exc:
                 LOG.warning("NapCat 实例停止失败: %s", exc)
 

@@ -61,7 +61,14 @@ class NapCatManager:
             {instances_root or global_install_dir}/instances/{persona_name}/
                 ├── config/         # 独立配置
                 ├── logs/           # 独立日志
+                ├── data/           # NapCat 登录凭证与设备信息持久化目录
                 └── qqnt.json       # 从全局复制
+
+        关键设计：
+            - data/ 目录用于持久化 NapCat 的登录凭证、设备标识和快速登录令牌，
+              确保人格重启后无需重复扫码。
+            - 通过环境变量 NAPCAT_DATA_PATH 将 NapCat 数据根目录指向实例目录，
+              避免不同人格间的登录状态互相覆盖。
         """
         global_dir = Path(global_install_dir).resolve()
         if instances_root is None:
@@ -71,6 +78,10 @@ class NapCatManager:
 
         instance_dir = instances_root / persona_name
         instance_dir.mkdir(parents=True, exist_ok=True)
+
+        # 创建 data 子目录用于持久化 NapCat 登录凭证
+        data_dir = instance_dir / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
 
         # 复制必要的全局文件到实例目录（如果不存在）
         for filename in ("qqnt.json",):
@@ -527,14 +538,27 @@ class NapCatManager:
 
     # ── 启动 / 停止 ──────────────────────────────────────
 
-    async def start(self, qq_number: str | None = None) -> dict:
+    async def start(
+        self,
+        qq_number: str | None = None,
+        *,
+        reboot: bool = True,
+        reuse_existing_process: bool = True,
+    ) -> dict:
         """启动 NapCat。
 
         Windows 下通过 NapCatWinBootMain.exe 注入 QQ 并启动。
         实例模式下，二进制从 install_dir 加载，但运行时 cwd 在 instance_dir。
 
+        关键改进（解决登录状态丢失问题）：
+            1. 当检测到同 QQ 的 NapCat/QQ 进程仍在运行时，优先复用而非重启。
+            2. 支持 reboot 参数，触发 NapCat 的快速登录机制，避免重复扫码。
+            3. 通过 NAPCAT_DATA_PATH 环境变量固定 NapCat 数据目录，确保登录凭证持久化。
+
         Args:
             qq_number: QQ 号，提供则使用快速登录；省略则使用二维码登录。
+            reboot: 是否尝试复用已有会话（快速登录）。默认 True。
+            reuse_existing_process: 是否复用已存在的 QQ/NapCat 进程。默认 True。
 
         Returns:
             {"success": bool, "message": str}
@@ -546,8 +570,16 @@ class NapCatManager:
         # 清理过期的 pid 文件（进程已死但文件残留）
         self._remove_pid_file()
 
-        if self._is_qq_process_running():
-            LOG.warning("检测到 QQ.exe 正在运行，NapCat 将尝试注入现有 QQ 或启动新实例")
+        # 尝试复用已存在的 QQ/NapCat 进程（避免重复扫码的关键）
+        if reuse_existing_process and self._is_qq_process_running():
+            LOG.info("检测到 QQ.exe 正在运行，尝试复用现有进程并建立连接...")
+            # 复用模式下不启动新进程，仅更新 PID 跟踪
+            # 实际连接由上层 wait_for_ws() 负责验证
+            self._write_pid_file(0)  # 占位，表示由外部进程管理
+            return {
+                "success": True,
+                "message": "检测到 QQ 已在运行，将复用现有会话（如已登录则无需扫码）",
+            }
 
         if not self.is_installed:
             return {"success": False, "message": "NapCat 未安装"}
@@ -589,12 +621,19 @@ class NapCatManager:
         env["NAPCAT_INJECT_PATH"] = str(hook)
         env["NAPCAT_LAUNCHER_PATH"] = str(launcher)
         env["NAPCAT_MAIN_PATH"] = str(main_script)
+        # 将 NapCat 数据目录固定到实例目录，确保登录凭证跨重启持久化
+        data_dir = self.instance_dir / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        env["NAPCAT_DATA_PATH"] = str(data_dir)
 
         cmd = [str(launcher), qq_path, str(hook)]
         if qq_number:
             cmd.extend(["-q", qq_number])
+        # 传递 reboot 参数触发 NapCat 快速登录机制
+        if reboot:
+            cmd.append("--reboot")
 
-        LOG.info("正在启动 NapCat (实例: %s): %s", self.instance_dir.name, " ".join(cmd))
+        LOG.info("正在启动 NapCat (实例: %s, reboot=%s): %s", self.instance_dir.name, reboot, " ".join(cmd))
         try:
             # Windows 下使用 CREATE_NEW_CONSOLE 让 QQ 窗口独立显示
             creationflags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
@@ -615,19 +654,64 @@ class NapCatManager:
             "message": f"NapCat 已启动 (pid={self._process.pid})。首次使用请在弹出的 QQ 窗口中扫码登录。",
         }
 
-    async def stop(self) -> dict:
+    async def stop(
+        self,
+        *,
+        force: bool = False,
+        preserve_session: bool = False,
+        timeout: float = 10.0,
+    ) -> dict:
         """停止 NapCat 进程。
 
-        Windows 下不直接 kill QQ 进程（NapCat 与 QQ 同进程，会误杀用户普通 QQ），
+        Windows 下默认不直接 kill QQ 进程（NapCat 与 QQ 同进程，会误杀用户普通 QQ），
         仅断开内部引用并清理 pid 文件。Linux 下保持原有 terminate/kill 逻辑。
+
+        关键改进（解决登录状态丢失问题）：
+            - 新增 preserve_session 参数：为 True 时仅断开管理器引用，保留 QQ 进程运行，
+              使登录会话保持活跃，下次启动时可快速复用（免重复扫码）。
+            - 新增 force 参数：为 True 时强制终止进程（无论平台）。
+            - 区分"停止管理"和"杀死进程"两种语义，避免误杀已登录会话。
+
+        Args:
+            force: 是否强制终止进程。默认 False。
+            preserve_session: 是否保留登录会话（仅断开管理器引用）。默认 False。
+            timeout: 优雅退出等待超时（秒）。默认 10.0。
+
+        Returns:
+            {"success": bool, "message": str}
         """
         if not self.is_running:
             self._process = None
             self._remove_pid_file()
             return {"success": True, "message": "NapCat 未在运行"}
 
+        # preserve_session 模式：仅清理管理器引用，保留进程运行
+        if preserve_session and not force:
+            if self._process is not None:
+                self._process = None
+            self._remove_pid_file()
+            LOG.info("已断开 NapCat 管理器引用，QQ 登录会话保持运行")
+            return {
+                "success": True,
+                "message": "已断开 NapCat 管理器引用（QQ 登录会话保持运行，下次可快速复用）",
+            }
+
         if sys.platform == "win32":
-            # Windows：只清理引用，不杀进程（避免关闭用户普通 QQ）
+            if force:
+                # 强制模式：终止进程
+                if self._process is not None:
+                    try:
+                        self._process.terminate()
+                    except Exception:
+                        pass
+                    self._process = None
+                self._remove_pid_file()
+                LOG.info("Windows 下已强制终止 NapCat 进程")
+                return {
+                    "success": True,
+                    "message": "Windows 下已强制终止 NapCat 进程",
+                }
+            # 非强制模式：只清理引用，不杀进程（避免关闭用户普通 QQ）
             if self._process is not None:
                 try:
                     self._process.terminate()
@@ -646,10 +730,10 @@ class NapCatManager:
             self._process.terminate()  # type: ignore[union-attr]
             await asyncio.wait_for(
                 asyncio.to_thread(self._process.wait),  # type: ignore[union-attr]
-                timeout=10.0,
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
-            LOG.warning("NapCat 进程未在 10 秒内退出，强制结束")
+            LOG.warning("NapCat 进程未在 %.0f 秒内退出，强制结束", timeout)
             self._process.kill()  # type: ignore[union-attr]
         except Exception as exc:
             LOG.error("停止 NapCat 失败: %s", exc)

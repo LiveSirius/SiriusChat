@@ -385,8 +385,7 @@ data/personas/{persona_name}/
 |   |-- __plugin_index__.json    # 插件索引（自动生成）
 |   |
 |   |-- weather/                 # 天气查询插件
-|   |   |-- plugin.json          # 插件元数据
-|   |   |-- __init__.py          # 入口文件（必须）
+|   |   |-- __init__.py          # PluginBase 子类（类属性 + @command 声明元数据）
 |   |   |-- api_client.py        # 天气 API 封装
 |   |   |-- formatters.py        # 数据格式化
 |   |   |-- templates/           # 静态模板
@@ -394,13 +393,11 @@ data/personas/{persona_name}/
 |   |   |-- requirements.txt     # 独立依赖
 |   |
 |   |-- roll_dice/               # 骰子插件
-|   |   |-- plugin.json
 |   |   |-- __init__.py
 |   |   |-- dice_parser.py       # 骰子表达式解析
 |   |   |-- requirements.txt
 |   |
 |   |-- daily_push/              # 每日推送插件
-|   |   |-- plugin.json
 |   |   |-- __init__.py
 |   |   |-- scheduler.py         # 定时逻辑
 |   |   |-- templates/
@@ -414,74 +411,46 @@ data/personas/{persona_name}/
 |-- ...
 ```
 
-### 5.2 plugin.json 元数据格式
+### 5.2 PluginBase 类属性格式（元数据）
 
-```json
-{
-  "name": "weather",
-  "display_name": "天气查询",
-  "description": "查询指定城市的实时天气，支持人格化表达",
-  "version": "1.0.0",
-  "author": "plugin-dev",
-  "min_framework_version": "1.2.0",
+```python
+from sirius_chat.plugins import PluginBase, PluginResponse
+from sirius_chat.plugins.decorators import command
 
-  "triggers": {
-    "commands": [
-      {
-        "name": "weather",
-        "patterns": ["/天气", "查天气", "天气怎么样"],
-        "pattern_type": "prefix",
-        "description": "查询城市天气",
-        "examples": ["/天气 北京", "查天气 上海"]
-      }
-    ],
-    "events": [
-      {
-        "type": "timer.daily",
-        "cron": "0 8 * * *",
-        "description": "每日早上8点推送天气"
-      }
+
+class WeatherPlugin(PluginBase):
+    # ── 元数据 ──
+    _plugin_name = "weather"
+    _plugin_display_name = "天气查询"
+    _plugin_description = "查询指定城市的实时天气，支持人格化表达"
+    _plugin_version = "1.0.0"
+    _plugin_author = "plugin-dev"
+
+    # ── 事件 ──
+    _plugin_events = [
+        {"type": "timer.daily", "cron": "0 8 * * *", "description": "每日早上8点推送天气"},
     ]
-  },
 
-  "parameters": {
-    "city": {
-      "type": "str",
-      "description": "城市名称",
-      "required": true,
-      "position": 0
-    },
-    "unit": {
-      "type": "str",
-      "description": "温度单位",
-      "required": false,
-      "default": "celsius",
-      "choices": ["celsius", "fahrenheit"]
+    # ── 权限 ──
+    _plugin_permissions = {
+        "developer_only": False,
+        "adapter_types": ["napcat"],
+        "group_whitelist": [],
+        "group_blacklist": [],
+        "user_whitelist": [],
+        "rate_limit": {"calls_per_minute": 10, "calls_per_hour": 100},
     }
-  },
 
-  "permissions": {
-    "developer_only": false,
-    "adapter_types": ["napcat"],
-    "group_whitelist": [],
-    "group_blacklist": [],
-    "user_whitelist": [],
-    "rate_limit": {
-      "calls_per_minute": 10,
-      "calls_per_hour": 100
-    }
-  },
+    # ── 依赖 ──
+    _plugin_dependencies = ["httpx>=0.24.0", "pydantic>=2.0"]
 
-  "render": {
-    "mode": "llm",
-    "system_prompt_suffix": "请以关心的语气告诉用户天气情况，提醒注意穿衣。",
-    "max_tokens": 200,
-    "temperature": 0.8
-  },
-
-  "dependencies": ["httpx>=0.24.0", "pydantic>=2.0"],
-  "resources": ["templates/"]
-}
+    # ── 指令（@command 装饰器声明） ──
+    @command("weather", patterns=["/天气", "查天气", "天气怎么样"],
+             render_mode="llm", description="查询城市天气",
+             system_prompt_suffix="请以关心的语气告诉用户天气情况，提醒注意穿衣。")
+    async def query_weather(self, city: str, unit: str = "celsius") -> PluginResponse:
+        data = await self._fetch_weather(city, unit)
+        return PluginResponse.ok(data=data)
 ```
 
 ### 5.3 加载流程
@@ -492,12 +461,12 @@ graph TD
         direction TB
         S[引擎启动] --> D[扫描 plugins/ 目录]
         D --> F{是文件夹?}
-        F -->|是| J[读取 plugin.json]
+        F -->|是| J[导入 .py 文件，查找 PluginBase 子类]
         F -->|否| SKIP[跳过]
-        J --> V[校验 schema]
+        J --> V[通过类属性 + @command 构建 PluginDefinition]
         V -->|失败| ERR1[记录错误，跳过]
-        V -->|通过| L[加载 __init__.py]
-        L --> I[导入 Plugin 类]
+        V -->|通过| L[实例化 PluginBase 子类]
+        L --> I[on_load()]
         I --> R[注册到 PluginRegistry]
         R --> B[构建触发器索引]
         B --> IDX[KeywordIndex<br/>PrefixTree<br/>RegexIndex<br/>EventIndex]
@@ -1058,43 +1027,18 @@ graph TD
 ### 12.3 最小可运行示例（Phase 1-2 完成后）
 
 ```python
-# data/personas/test/plugins/hello/plugin.json
-{
-  "name": "hello",
-  "display_name": "问候插件",
-  "version": "1.0.0",
-  "triggers": {
-    "commands": [
-      {
-        "name": "hello",
-        "patterns": ["/hello", "你好"],
-        "pattern_type": "prefix"
-      }
-    ]
-  },
-  "parameters": {
-    "name": {
-      "type": "str",
-      "required": false,
-      "default": "朋友"
-    }
-  },
-  "render": {
-    "mode": "direct"
-  }
-}
-
 # data/personas/test/plugins/hello/__init__.py
-from sirius_chat.plugins import PluginBase, PluginContext, PluginResult
+from sirius_chat.plugins import PluginBase, PluginResponse
+from sirius_chat.plugins.decorators import command
+
 
 class HelloPlugin(PluginBase):
-    def execute(self, cmd):
-        name = cmd.kwargs.get("name", "朋友")
-        return PluginResult(
-            success=True,
-            text=f"你好呀，{name}！我是 {self.ctx.engine.get_persona().name}~",
-            render_mode="direct"
-        )
+    _plugin_name = "hello"
+    _plugin_display_name = "问候插件"
+
+    @command("hello", patterns=["/hello", "你好"], render_mode="direct")
+    def hello(self, name: str = "朋友") -> PluginResponse:
+        return PluginResponse.ok(text=f"你好呀，{name}！我是 {self.ctx.engine.get_persona_name()}~")
 ```
 
 ---
@@ -1207,22 +1151,19 @@ def semantic_match(query: str, intent_examples: list[str]) -> float:
     return best_score
 ```
 
-插件开发者在 `plugin.json` 中提供示例语料：
+插件开发者在类属性中提供示例语料：
 
-```json
-{
-  "natural_language": {
-    "examples": [
-      "帮我查一下{city}的天气",
-      "{city}今天会下雨吗",
-      "看看{city}的天气预报"
-    ],
-    "slots": {
-      "city": { "type": "city_name", "required": true },
-      "date": { "type": "date", "required": false, "default": "今天" }
+```python
+class WeatherPlugin(PluginBase):
+    _plugin_nl_examples = [
+        "帮我查一下{city}的天气",
+        "{city}今天会下雨吗",
+        "看看{city}的天气预报"
+    ]
+    _plugin_nl_slots = {
+        "city": {"type": "city_name", "required": True},
+        "date": {"type": "date", "required": False, "default": "今天"}
     }
-  }
-}
 ```
 
 ### 13.4 槽位填充（Slot Extraction）
