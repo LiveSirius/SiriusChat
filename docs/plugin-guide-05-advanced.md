@@ -6,13 +6,12 @@
 
 ## 1. 权限控制
 
-Plugin 可以通过 `plugin.json` 的 `permissions` 字段限制可调用者：
+Plugin 可以通过类属性 `_plugin_permissions` 限制可调用者：
 
-```json
-{
-    "name": "admin_plugin",
-    "permissions": {
-        "developer_only": true,
+```python
+class AdminPlugin(PluginBase):
+    _plugin_permissions = {
+        "developer_only": True,
         "adapter_types": ["napcat"],
         "group_whitelist": ["123456789"],
         "group_blacklist": ["987654321"],
@@ -22,7 +21,6 @@ Plugin 可以通过 `plugin.json` 的 `permissions` 字段限制可调用者：
             "calls_per_hour": 100
         }
     }
-}
 ```
 
 | 字段 | 说明 |
@@ -41,33 +39,16 @@ Plugin 可以通过 `plugin.json` 的 `permissions` 字段限制可调用者：
 
 除了指令触发（`commands`），Plugin 还可以通过事件触发：
 
-### 2.1 `plugin.json` 配置
+### 2.1 类属性配置
 
-```json
-{
-    "triggers": {
-        "events": [
-            {
-                "type": "timer.hourly",
-                "description": "每小时整点执行一次"
-            },
-            {
-                "type": "timer.daily",
-                "cron": "0 8 * * *",
-                "description": "每天早上 8 点执行"
-            },
-            {
-                "type": "timer.interval",
-                "interval_seconds": 300,
-                "description": "每 5 分钟执行一次"
-            },
-            {
-                "type": "engine.startup",
-                "description": "引擎启动时执行"
-            }
-        ]
-    }
-}
+```python
+class DailyReportPlugin(PluginBase):
+    _plugin_events = [
+        {"type": "timer.hourly", "description": "每小时整点执行一次"},
+        {"type": "timer.daily", "cron": "0 8 * * *", "description": "每天早上 8 点执行"},
+        {"type": "timer.interval", "interval_seconds": 300, "description": "每 5 分钟执行一次"},
+        {"type": "engine.startup", "description": "引擎启动时执行"},
+    ]
 ```
 
 | 事件类型 | 说明 |
@@ -108,19 +89,16 @@ class DailyReportPlugin(PluginBase):
 
 除了固定前缀（`/天气`）外，还可以通过自然语言匹配触发：
 
-```json
-{
-    "natural_language": {
-        "examples": [
-            "帮我查一下{city}的天气",
-            "{city}今天天气怎么样",
-            "我想知道{city}的温度"
-        ],
-        "slots": {
-            "city": {"type": "str", "description": "城市名"}
-        }
+```python
+class WeatherPlugin(PluginBase):
+    _plugin_nl_examples = [
+        "帮我查一下{city}的天气",
+        "{city}今天天气怎么样",
+        "我想知道{city}的温度"
+    ]
+    _plugin_nl_slots = {
+        "city": {"type": "str", "description": "城市名"}
     }
-}
 ```
 
 当框架的 CognitionAnalyzer 检测到用户意图匹配 `natural_language.examples` 的语义时，会自动触发对应的 Plugin 指令。
@@ -137,8 +115,7 @@ Plugin 支持 Jinja2 风格的简单模板（`{变量}` 替换）：
 
 ```
 plugins/my_plugin/
-├── plugin.json
-├── main.py
+├── hello_plugin.py
 └── templates/
     └── report.txt
 ```
@@ -167,17 +144,12 @@ async def daily_report(self) -> PluginResponse:
 
 ## 5. 依赖声明
 
-如果你的 Plugin 依赖第三方 Python 库，在 `plugin.json` 中声明：
+如果你的 Plugin 依赖第三方 Python 库：
 
-```json
-{
-    "dependencies": ["requests>=2.28", "pillow>=10.0"],
-    "resources": ["fonts/NotoSansSC.ttf"]
-}
+```python
+class MyPlugin(PluginBase):
+    _plugin_dependencies = ["requests>=2.28", "pillow>=10.0"]
 ```
-
-- `dependencies`：pip 包名及版本约束
-- `resources`：打包到 Plugin 目录中的静态资源文件
 
 ---
 
@@ -222,7 +194,7 @@ async def log_activity(self) -> PluginResponse:
 
 ### 6.4 动态覆写 render_mode
 
-`PluginResponse.render_mode` 可以动态覆写 `plugin.json` 或 `@command` 中的设定：
+`PluginResponse.render_mode` 可以动态覆写 `@command` 中的设定：
 
 ```python
 async def weather(self, city: str) -> PluginResponse:
@@ -240,52 +212,29 @@ async def weather(self, city: str) -> PluginResponse:
 
 ---
 
-## 7. 完整的 plugin.json 参考
+## 7. 完整的类属性参考
 
-```json
-{
-    "name": "my_plugin",
-    "display_name": "我的插件",
-    "description": "插件描述",
-    "version": "1.0.0",
-    "author": "作者名",
-    "min_framework_version": "1.2.0",
+```python
+class MyPlugin(PluginBase):
+    # ── 元数据 ──
+    _plugin_name = "my_plugin"              # 内部标识名（必需，缺省时用类名）
+    _plugin_display_name = "我的插件"        # 显示名称
+    _plugin_description = "插件描述"
+    _plugin_version = "1.0.0"
+    _plugin_author = "作者名"
 
-    "triggers": {
-        "commands": [
-            {
-                "name": "cmd1",
-                "patterns": ["/cmd1", "命令1"],
-                "pattern_type": "prefix",
-                "description": "指令描述",
-                "examples": ["/cmd1 arg1"]
-            }
-        ],
-        "events": [
-            {
-                "type": "timer.daily",
-                "cron": "0 8 * * *",
-                "description": "每天早上 8 点"
-            }
-        ]
-    },
+    # ── 事件 ──
+    _plugin_events = [
+        {"type": "timer.daily", "cron": "0 8 * * *"}
+    ]
 
-    "parameters": {
-        "city": {
-            "type": "str",
-            "description": "城市名",
-            "required": true,
-            "position": 0
-        }
-    },
+    # ── 自然语言 ──
+    _plugin_nl_examples = ["查{city}天气"]
+    _plugin_nl_slots = {"city": {"type": "str"}}
 
-    "natural_language": {
-        "examples": ["查{city}天气"],
-        "slots": {"city": {"type": "str"}}
-    },
-
-    "permissions": {
-        "developer_only": false,
+    # ── 权限 ──
+    _plugin_permissions = {
+        "developer_only": False,
         "adapter_types": [],
         "group_whitelist": [],
         "group_blacklist": [],
@@ -294,18 +243,14 @@ async def weather(self, city: str) -> PluginResponse:
             "calls_per_minute": 60,
             "calls_per_hour": 1000
         }
-    },
+    }
 
-    "render": {
-        "mode": "direct",
-        "system_prompt_suffix": "",
-        "max_tokens": 500,
-        "temperature": 0.8
-    },
+    # ── 依赖 ──
+    _plugin_dependencies = []
 
-    "dependencies": [],
-    "resources": []
-}
+    # ── 指令（通过 @command 装饰器） ──
+    @command("cmd1", patterns=["/cmd1"], render_mode="direct")
+    def cmd1(self) -> PluginResponse: ...
 ```
 
 ---
@@ -316,8 +261,7 @@ async def weather(self, city: str) -> PluginResponse:
 
 ```
 plugins/my_plugin/
-├── plugin.json          # 必需：元数据声明
-├── main.py              # 必需：PluginBase 子类
+├── hello_plugin.py      # 必需的 Python 文件（定义 PluginBase 子类）
 ├── templates/           # 可选：模板文件
 │   └── report.txt
 └── resources/           # 可选：静态资源

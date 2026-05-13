@@ -202,23 +202,9 @@ async def search(self, query: str):
 
 ---
 
-## 7. `plugin.json` 配合 `@command`
+## 7. 不需要 `plugin.json`
 
-使用 `@command` 后，`plugin.json` 的 `triggers.commands` 可以简化——框架会自动从 `@command` 装饰器中读取配置：
-
-```json
-{
-    "name": "weather_plugin",
-    "display_name": "天气查询",
-    "description": "查询城市天气",
-    "version": "1.0.0",
-    "render": {
-        "mode": "direct"
-    }
-}
-```
-
-不需要手动写 `triggers.commands`。`@command` 装饰器的参数自动生成对应的 `PluginCommandDef`。
+使用 `@command` 后，**不再需要 `plugin.json`**。框架自动从类属性和 `@command` 装饰器中读取所有配置。
 
 ---
 

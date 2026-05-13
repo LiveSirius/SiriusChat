@@ -91,7 +91,7 @@ graph TB
 | **输出控制** | SKILL 返回什么就追加什么 | Plugin 决定：直接回复 / 委托引擎生成 | 自行调用 `queue_pending_message` 或 `generate_text` |
 | **平台接口** | 有限（bridge 注入） | **丰富**（NapCatAdapter 原生 API 暴露） | 有限 |
 | **文件组织** | 单 `.py` 文件 | **文件夹级**（`__init__.py` + 子模块 + 资源） | 单 `.py` 文件 |
-| **依赖管理** | `SKILL_META.dependencies` | **`plugin.json` dependencies + 本地 venv** | 同 ActiveSkill |
+| **依赖管理** | `SKILL_META.dependencies` | **`_plugin_dependencies` 类属性** | 同 ActiveSkill |
 | **适用场景** | 工具调用、信息查询、链式操作 | 命令 Bot、骰子、定时推送、Webhook | 后台监控、数据同步、日志 |
 
 ---

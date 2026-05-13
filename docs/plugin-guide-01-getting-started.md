@@ -6,7 +6,7 @@
 
 ## 1. 什么是 Plugin
 
-Plugin 是 Sirius Chat 的可扩展指令系统。一个 Plugin 就是一个 Python 类，通过 `plugin.json` 声明元数据，通过方法处理用户指令。
+Plugin 是 Sirius Chat 的可扩展指令系统。一个 Plugin 就是一个继承自 `PluginBase` 的 Python 类，通过类属性和 `@command` 装饰器声明元数据与指令。
 
 **Plugin 能做什么？**
 
@@ -22,59 +22,27 @@ Plugin 是 Sirius Chat 的可扩展指令系统。一个 Plugin 就是一个 Pyt
 
 ## 2. 最小 Plugin 示例
 
-创建一个目录 `plugins/my_first_plugin/`，包含两个文件：
+创建一个目录 `plugins/my_first_plugin/`，包含一个 Python 文件：
 
-### 2.1 `plugin.json` —— 声明你是谁
-
-```json
-{
-    "name": "my_first_plugin",
-    "display_name": "我的第一个插件",
-    "description": "一个简单的示例插件",
-    "version": "1.0.0",
-    "author": "你的名字",
-    "triggers": {
-        "commands": [
-            {
-                "name": "hello",
-                "patterns": ["/hello", "你好"],
-                "pattern_type": "prefix",
-                "description": "打个招呼"
-            }
-        ]
-    },
-    "render": {
-        "mode": "direct"
-    }
-}
-```
-
-| 字段 | 说明 |
-|------|------|
-| `name` | 插件内部唯一标识名 |
-| `display_name` | 显示名称 |
-| `triggers.commands` | 指令触发器列表 |
-| `triggers.commands[].name` | 指令名，对应代码中的 CommandAST.command |
-| `triggers.commands[].patterns` | 触发词列表，匹配用户输入 |
-| `render.mode` | 输出模式（`direct` / `llm` / `silent`） |
-
-### 2.2 `main.py` —— 实现逻辑
+### 2.1 `hello_plugin.py` —— 完整插件
 
 ```python
 from sirius_chat.plugins import PluginBase, PluginResponse, CommandAST
+from sirius_chat.plugins.decorators import command
 
 
 class MyPlugin(PluginBase):
+    _plugin_name = "my_first_plugin"
+    _plugin_display_name = "我的第一个插件"
+    _plugin_description = "一个简单的示例插件"
 
-    def execute(self, cmd: CommandAST) -> PluginResponse:
-        # 根据 cmd.command 分发到不同处理方法
-        if cmd.command == "hello":
-            return self._handle_hello(cmd)
-        return PluginResponse.fail(f"未知指令: {cmd.command}")
-
-    def _handle_hello(self, cmd: CommandAST) -> PluginResponse:
+    @command("hello", patterns=["/hello", "你好"], render_mode="direct",
+             description="打个招呼")
+    def hello(self) -> PluginResponse:
         return PluginResponse.ok(text="你好！我是 Sirius Chat 的插件！")
 ```
+
+所有配置都在 Python 类中：类属性声明元数据，`@command` 装饰器声明指令。
 
 ---
 
@@ -84,7 +52,7 @@ class MyPlugin(PluginBase):
 
 ```
 ┌──────────┐
-│  加载     │  on_load()  ← 扫描到 plugin.json 后调用一次
+│  加载     │  on_load()  ← 扫描到 PluginBase 子类后调用一次
 └────┬─────┘
      │
 ┌────▼─────┐
@@ -161,7 +129,7 @@ return PluginResponse.ok(
 | `text` | 纯文本输出（`render_mode=direct` 时直接发送） |
 | `data` | 结构化数据（`render_mode=llm` 时交给人格引擎风格化） |
 | `error` | 错误信息 |
-| `render_mode` | 覆写 plugin.json 中的渲染模式 |
+| `render_mode` | 覆写 @command 中声明的渲染模式 |
 | `mood_hint` | 情绪提示（如 "温暖关心"、"严肃正式"） |
 | `tone_override` | 语气覆写 |
 | `message_group` | 多模态输出（图片/语音/文件） |
