@@ -807,12 +807,17 @@ class NapCatAdapter(BaseAdapter):
                 gid = str(event.data.get("group_id", ""))
                 reply = event.data.get("reply", "")
                 adapter_type = event.data.get("adapter_type", "")
+                image_path = str(event.data.get("image_path", "")).strip()
                 if reply and adapter_type == self.adapter_type:
                     if gid.startswith("private_"):
                         uid = gid.replace("private_", "").replace("qq_", "")
                         await self._send_private_text(uid, reply)
+                        if image_path:
+                            await self._send_private_image(uid, image_path)
                     elif gid in self._get_allowed_group_ids():
                         await self._send_group_text(gid, reply)
+                        if image_path:
+                            await self._send_group_image(gid, image_path)
         except Exception as exc:
             LOG.warning("事件处理异常: %s", exc)
 
@@ -833,6 +838,26 @@ class NapCatAdapter(BaseAdapter):
                 LOG.info("回复私聊 %s: %s", user_id, text[:120])
             except Exception as exc:
                 LOG.warning("发送私聊消息失败: %s", exc)
+
+    async def _send_group_image(self, group_id: str, image_path: str) -> None:
+        """发送群聊图片。"""
+        segment: list[dict[str, Any]] = [{"type": "image", "data": {"file": image_path}}]
+        async with self._get_reply_lock(group_id):
+            try:
+                await self.send_group_msg(group_id, segment)
+                LOG.info("回复群 %s 图片: %s", group_id, image_path)
+            except Exception as exc:
+                LOG.warning("发送群图片失败: %s", exc)
+
+    async def _send_private_image(self, user_id: str, image_path: str) -> None:
+        """发送私聊图片。"""
+        segment: list[dict[str, Any]] = [{"type": "image", "data": {"file": image_path}}]
+        async with self._get_reply_lock(user_id):
+            try:
+                await self.send_private_msg(user_id, segment)
+                LOG.info("回复私聊 %s 图片: %s", user_id, image_path)
+            except Exception as exc:
+                LOG.warning("发送私聊图片失败: %s", exc)
 
     def _get_reply_lock(self, key: str) -> asyncio.Lock:
         lock = self._reply_locks.get(key)

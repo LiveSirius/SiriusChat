@@ -440,6 +440,15 @@ async def _handle_single_event(
 
     if notification:
         ctx.queue_pending_message(group_id, notification)
+        await ctx.emit_event(
+            "reminder_triggered",
+            {
+                "group_id": group_id,
+                "reply": notification,
+                "image_path": screenshot_path or "",
+                "adapter_type": "napcat",
+            },
+        )
         ctx.log_inner_thought(
             f"github_monitor: [{event_info['repo']}] {event_info['actor']} "
             f"{event_info['action_cn']}{event_info['type_desc']} - 通知已发送"
