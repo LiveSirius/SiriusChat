@@ -259,18 +259,39 @@ async def _poll_github_events(ctx: Any) -> None:
             )
             for event in reversed(new_events):
                 event_info = _extract_event_info(event)
+                url = event_info.get("url", "")
 
+                # 截图：每个事件仅一次
+                screenshot_path: str | None = None
+                if url:
+                    try:
+                        screenshot_path = await _take_screenshot(url, store)
+                    except Exception as exc:
+                        logger.warning("github_monitor: 截图失败 (%s): %s", url, exc)
+
+                # LLM 生成：每个事件仅调用一次
+                notification = await _generate_notification_text(
+                    ctx, event_info, screenshot_path
+                )
+
+                if not notification:
+                    continue
+
+                ctx.log_inner_thought(
+                    f"github_monitor: [{event_info['repo']}] {event_info['actor']} "
+                    f"{event_info['action_cn']}{event_info['type_desc']} - 通知已生成，分发到 {len(target_groups)} 个群"
+                )
+
+                # 分发给所有订阅群
                 for gid in target_groups:
-                    # 跳过不活跃的群（private_ 前缀的群始终允许）
                     active_groups = ctx.get_active_groups()
                     if gid not in active_groups and not gid.startswith("private_"):
                         continue
-
                     try:
-                        await _handle_single_event(ctx, store, event_info, gid, github_token)
+                        await _dispatch_notification(ctx, gid, notification, screenshot_path)
                     except Exception as exc:
                         logger.warning(
-                            "github_monitor: 处理 %s 事件失败 (gid=%s): %s",
+                            "github_monitor: 分发 %s 失败 (gid=%s): %s",
                             repo_key, gid, exc,
                         )
 
@@ -411,51 +432,30 @@ def _truncate_text(text: str, max_len: int = 500) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 事件处理：截图 + 通知
+# 事件分发给群
 # ═══════════════════════════════════════════════════════════════════════
 
 
-async def _handle_single_event(
+async def _dispatch_notification(
     ctx: Any,
-    store: Any,
-    event_info: dict[str, Any],
     group_id: str,
-    github_token: str,
+    text: str,
+    screenshot_path: str | None,
 ) -> None:
-    """处理单个事件：截图 → 生成人格风格通知 → 入队发送。"""
-    url = event_info.get("url", "")
-
-    # 尝试截图
-    screenshot_path: str | None = None
-    if url:
-        try:
-            screenshot_path = await _take_screenshot(url, store)
-        except Exception as exc:
-            logger.warning("github_monitor: 截图失败 (%s): %s", url, exc)
-
-    # 生成人格风格通知
-    notification = await _generate_notification(
-        ctx, group_id, event_info, screenshot_path
+    """将已生成的通知文字和截图分发给单个群。"""
+    ctx.queue_pending_message(group_id, text)
+    await ctx.emit_event(
+        "reminder_triggered",
+        {
+            "group_id": group_id,
+            "reply": text,
+            "image_path": screenshot_path or "",
+            "adapter_type": "napcat",
+        },
     )
-
-    if notification:
-        ctx.queue_pending_message(group_id, notification)
-        await ctx.emit_event(
-            "reminder_triggered",
-            {
-                "group_id": group_id,
-                "reply": notification,
-                "image_path": screenshot_path or "",
-                "adapter_type": "napcat",
-            },
-        )
-        ctx.log_inner_thought(
-            f"github_monitor: [{event_info['repo']}] {event_info['actor']} "
-            f"{event_info['action_cn']}{event_info['type_desc']} - 通知已发送"
-        )
-        # 私聊群需要激活
-        if group_id.startswith("private_"):
-            ctx.activate_private_group(group_id)
+    # 私聊群需要激活
+    if group_id.startswith("private_"):
+        ctx.activate_private_group(group_id)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -521,13 +521,12 @@ def _get_artifact_dir(store: Any) -> Path:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-async def _generate_notification(
+async def _generate_notification_text(
     ctx: Any,
-    group_id: str,
     event_info: dict[str, Any],
     screenshot_path: str | None,
 ) -> str | None:
-    """调用 LLM 生成人格风格的通知消息。
+    """调用 LLM 生成人格风格的通知消息（不绑定群，不写记忆）。
 
     构建包含人格身份、事件详情的 prompt，并将页面截图作为多模态输入
     传给模型，让 AI 能参考真实页面内容生成更贴合的回覆。
@@ -547,7 +546,7 @@ async def _generate_notification(
             f"要求：\n"
             f"- 不要机械复述，像朋友分享新鲜事一样自然\n"
             f"- 简短即可，2-4 句话\n"
-            f"- 提到关键信息：谁、做了什么、涉及什么仓库（包括仓库的URL）\n"
+            f"- 提到关键信息：谁、做了什么、涉及什么仓库\n"
             f"- 可以表达你的感受（惊讶、期待、好奇等），但要符合你的人设\n"
             f"- 如果附带了页面截图，请结合截图内容描述具体变化"
         )
@@ -572,26 +571,17 @@ async def _generate_notification(
         raw_reply = await ctx.generate_text(
             system_prompt,
             messages,
-            group_id,
+            # 使用第一个活跃群作为 generate_text 的 group_id（仅用于 token 统计/路由）
+            ctx.get_active_groups()[0] if ctx.get_active_groups() else "github_monitor",
             task_name="github_monitor_notify",
         )
 
         from sirius_chat.skills.executor import strip_skill_calls
 
         reply = strip_skill_calls(raw_reply).strip()
-
-        if reply:
-            persona_name = persona.name if persona else "assistant"
-            ctx.add_memory_entry(
-                group_id, "assistant", "assistant", reply, persona_name
-            )
-            ctx.record_reply_timestamp(group_id)
-            ctx.persist_group_state(group_id)
-
         return reply or None
     except Exception as exc:
         logger.warning("github_monitor: 生成通知失败: %s", exc)
-        # 降级：返回纯文本通知
         return _build_fallback_notification(event_info)
 
 
@@ -613,6 +603,8 @@ def _build_event_section(
         lines.append(f"内容: {event_info['body']}")
     if event_info.get("url"):
         lines.append(f"链接: {event_info['url']}")
+    if screenshot_path:
+        lines.append(f"页面截图: {screenshot_path}（可用作参考）")
     return "\n".join(lines)
 
 
