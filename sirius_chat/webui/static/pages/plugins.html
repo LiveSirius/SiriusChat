@@ -35,21 +35,25 @@
           </label>
         </div>
         <div class="form-group" style="margin-bottom:12px">
-          <label>群白名单（一行一个群号）</label>
-          <textarea id="pluginCfgGroupWhitelist" rows="3" style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:13px" placeholder="留空表示不限制"></textarea>
-        </div>
-        <div class="form-group" style="margin-bottom:12px">
-          <label>群黑名单（一行一个群号）</label>
+          <label>群黑名单（一行一个群号，在此名单中的群将禁用此插件）</label>
           <textarea id="pluginCfgGroupBlacklist" rows="3" style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:13px" placeholder="留空表示不限制"></textarea>
         </div>
         <div class="form-group" style="margin-bottom:12px">
           <label>限流调用频率（次/分钟）</label>
           <input type="number" id="pluginCfgRateLimit" value="60" min="1" max="1000" style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;width:100px">
         </div>
-        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
-          <button class="btn" onclick="closePluginDetail()">取消</button>
-          <button class="btn success" onclick="savePluginConfig()">💾 保存配置</button>
-        </div>
+      </div>
+
+      <!-- 自定义配置 -->
+      <div id="pluginDetailSettings" style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px;display:none">
+        <h4 style="margin:0 0 12px;font-size:14px">🔧 自定义配置</h4>
+        <div id="pluginSettingsForm"></div>
+      </div>
+
+      <!-- 保存按钮 -->
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+        <button class="btn" onclick="closePluginDetail()">取消</button>
+        <button class="btn success" onclick="savePluginConfig()">💾 保存配置</button>
       </div>
     </div>
   </div>

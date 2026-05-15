@@ -41,6 +41,15 @@ class SkillDataStore:
                 except (json.JSONDecodeError, OSError) as exc:
                     logger.warning("SKILL数据存储加载失败 (%s): %s", self._path, exc)
 
+    def reload(self) -> None:
+        """从磁盘重新加载数据，覆盖内存中的当前数据。
+
+        用于 WebUI 修改 skill 配置后无需重启即可被 SKILL 感知。
+        """
+        with self._lock:
+            self._dirty = False
+            self._load()
+
     def save(self) -> None:
         """Persist current data to disk (only if modified).
 

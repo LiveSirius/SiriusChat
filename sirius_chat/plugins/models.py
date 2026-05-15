@@ -164,15 +164,13 @@ class PluginParameterDef:
 class PluginPermissionDef:
     """Plugin 权限定义。
 
-    group_whitelist/user_whitelist 已废弃：Plugin 默认可在所有引擎活跃群使用，由
-    主引擎白名单管控；group_blacklist 用于按群遮蔽特定 Plugin。
+    Plugin 默认可在所有引擎活跃群使用，由主引擎白名单管控；
+    group_blacklist 用于按群遮蔽特定 Plugin。
     """
 
     developer_only: bool = False
     adapter_types: list[str] = field(default_factory=list)
-    group_whitelist: list[str] = field(default_factory=list)    # 已废弃，由引擎白名单管控
     group_blacklist: list[str] = field(default_factory=list)    # 群黑名单
-    user_whitelist: list[str] = field(default_factory=list)     # 已废弃
     rate_limit_calls_per_minute: int = 60
     rate_limit_calls_per_hour: int = 1000
 
@@ -293,9 +291,7 @@ class PluginDefinition:
         permissions = PluginPermissionDef(
             developer_only=perm_raw.get("developer_only", False),
             adapter_types=perm_raw.get("adapter_types", []),
-            group_whitelist=perm_raw.get("group_whitelist", []),
             group_blacklist=perm_raw.get("group_blacklist", []),
-            user_whitelist=perm_raw.get("user_whitelist", []),
             rate_limit_calls_per_minute=perm_raw.get("rate_limit", {}).get("calls_per_minute", 60),
             rate_limit_calls_per_hour=perm_raw.get("rate_limit", {}).get("calls_per_hour", 1000),
         )
@@ -387,9 +383,7 @@ class PluginDefinition:
         permissions = PluginPermissionDef(
             developer_only=perm_raw.get("developer_only", False),
             adapter_types=perm_raw.get("adapter_types", []),
-            group_whitelist=perm_raw.get("group_whitelist", []),
             group_blacklist=perm_raw.get("group_blacklist", []),
-            user_whitelist=perm_raw.get("user_whitelist", []),
             rate_limit_calls_per_minute=perm_raw.get("rate_limit", {}).get("calls_per_minute", 60),
             rate_limit_calls_per_hour=perm_raw.get("rate_limit", {}).get("calls_per_hour", 1000),
         )

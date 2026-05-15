@@ -243,13 +243,49 @@ async def api_persona_skill_config_post(request: web.Request, persona_manager: A
         persona_config = _load_persona_skill_config(paths.dir)
         if skill_name not in persona_config:
             persona_config[skill_name] = {}
-        persona_config[skill_name]["config"] = body.get("config", {})
+        skill_cfg = body.get("config", {})
+        persona_config[skill_name]["config"] = skill_cfg
         if "enabled" in body:
             persona_config[skill_name]["enabled"] = bool(body["enabled"])
         _save_persona_skill_config(paths.dir, persona_config)
+
+        # 同时将 config 同步到 data_store 文件，使 SKILL 通过 store.reload() 感知变更
+        _sync_config_to_data_store(paths.dir, skill_name, skill_cfg)
 
         LOG.info("Skill 配置已保存 %s/%s", name, skill_name)
         return _json_response({"success": True, "skill": skill_name})
     except Exception as exc:
         LOG.warning("保存 Skill 配置失败 %s/%s: %s", name, skill_name, exc)
         return _json_response({"error": str(exc)}, 500)
+
+
+def _sync_config_to_data_store(persona_dir: Path, skill_name: str, config: dict[str, Any]) -> None:
+    """将 skill 配置 merge 写入 data_store 文件，保留已有的运行时字段。
+
+    data_store 文件路径为 skill_data/{skill_name}.json。
+    合并策略：config 中的键覆盖 data_store 中的同名键，data_store 中其余键保留。
+    """
+    if not isinstance(config, dict) or not config:
+        return
+
+    store_path = persona_dir / "skill_data" / f"{skill_name}.json"
+    existing: dict[str, Any] = {}
+    if store_path.exists():
+        try:
+            existing = json.loads(store_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    if not isinstance(existing, dict):
+        existing = {}
+
+    # 合并：config 覆盖已有同名键，其余保留
+    merged = dict(existing)
+    for key, value in config.items():
+        merged[key] = value
+
+    # 原子写入
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = store_path.with_suffix(store_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(store_path)

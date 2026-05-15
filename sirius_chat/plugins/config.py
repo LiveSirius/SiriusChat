@@ -109,8 +109,7 @@ class PluginConfigManager:
                 settings: dict[str, Any] = {}
                 
                 # 权限相关字段移到 permissions
-                perm_keys = {"group_blacklist", "group_whitelist", "user_whitelist", 
-                           "developer_only", "rate_limit_calls_per_minute"}
+                perm_keys = {"group_blacklist", "developer_only", "rate_limit_calls_per_minute"}
                 for key in list(plugin_data.keys()):
                     if key in perm_keys:
                         permissions[key] = plugin_data.pop(key)
@@ -297,7 +296,7 @@ def get_config_manager(plugins_dir: Path | None = None) -> PluginConfigManager:
     """获取全局配置管理器单例。
     
     Args:
-        plugins_dir: 插件目录路径，首次调用时必须提供
+        plugins_dir: 插件目录路径，首次调用时如未提供则自动推断
     
     Returns:
         PluginConfigManager 实例
@@ -306,7 +305,9 @@ def get_config_manager(plugins_dir: Path | None = None) -> PluginConfigManager:
     
     if _global_config_manager is None:
         if plugins_dir is None:
-            raise RuntimeError("首次调用必须提供 plugins_dir 参数")
+            # 自动推断：本文件位于 sirius_chat/plugins/config.py
+            # 项目根目录 / plugins 即为插件目录
+            plugins_dir = Path(__file__).resolve().parent.parent.parent / "plugins"
         _global_config_manager = PluginConfigManager(plugins_dir)
     
     return _global_config_manager

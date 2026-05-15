@@ -128,6 +128,7 @@ async def api_plugin_detail_get(request: web.Request, manager: Any) -> web.Respo
     plugins_dir = _plugins_dir(manager)
     loader = PluginLoader(plugins_dir)
     config_manager = _get_config_manager(manager)
+    config_manager.reload()  # 热重载，确保读取最新的磁盘配置
 
     definitions = loader.load_all_definitions()
     definition = next((d for d in definitions if d.name == plugin_name), None)
@@ -233,8 +234,6 @@ async def api_plugin_config_get(request: web.Request, manager: Any) -> web.Respo
     return _json_response({
         "plugin": plugin_name,
         "group_blacklist": permissions.get("group_blacklist", []),
-        "group_whitelist": permissions.get("group_whitelist", []),
-        "user_whitelist": permissions.get("user_whitelist", []),
         "developer_only": permissions.get("developer_only", False),
         "rate_limit_calls_per_minute": permissions.get("rate_limit_calls_per_minute", 60),
     })
@@ -254,9 +253,8 @@ async def api_plugin_config_post(request: web.Request, manager: Any) -> web.Resp
     config_manager = _get_config_manager(manager)
     permissions: dict[str, Any] = {}
 
-    for key in ("group_whitelist", "group_blacklist", "user_whitelist"):
-        if key in body and isinstance(body[key], list):
-            permissions[key] = [str(v).strip() for v in body[key] if str(v).strip()]
+    if "group_blacklist" in body and isinstance(body["group_blacklist"], list):
+        permissions["group_blacklist"] = [str(v).strip() for v in body["group_blacklist"] if str(v).strip()]
 
     if "developer_only" in body:
         permissions["developer_only"] = bool(body["developer_only"])

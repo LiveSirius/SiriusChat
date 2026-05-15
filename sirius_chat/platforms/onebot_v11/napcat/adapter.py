@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -93,6 +94,10 @@ class NapCatAdapter(BaseAdapter):
         self._last_not_ready_log: float = 0.0
         self._reply_locks: dict[str, asyncio.Lock] = {}
         self._event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        # API 限流：每群/私聊独立，每秒最多 1 条消息
+        self._last_api_call_at: dict[str, float] = {}
+        self._api_send_lock = asyncio.Lock()
         self._event_bus_task: asyncio.Task | None = None
 
     # ─── 生命周期 ─────────────────────────────────────────
@@ -245,10 +250,40 @@ class NapCatAdapter(BaseAdapter):
             except Exception:
                 LOG.exception("Event handler error")
 
+    # ── 消息发送限流（每群/私聊独立） ────────────────────
+
+    @staticmethod
+    def _is_send_action(action: str) -> bool:
+        return action in ("send_group_msg", "send_private_msg")
+
+    def _send_channel_key(self, action: str, params: dict[str, Any]) -> str:
+        if action == "send_group_msg":
+            return f"group_{params.get('group_id', '')}"
+        if action == "send_private_msg":
+            return f"private_{params.get('user_id', '')}"
+        return ""
+
     # ─── API 调用 ─────────────────────────────────────────
 
     async def call_api(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
-        """通过 WebSocket 发送 OneBot API 请求并等待响应。"""
+        """通过 WebSocket 发送 OneBot API 请求并等待响应。
+
+        消息发送内置限流：每群/私聊每秒最多 1 条，各频道独立。
+        """
+        if self._is_send_action(action):
+            channel = self._send_channel_key(action, params)
+            async with self._api_send_lock:
+                last = self._last_api_call_at.get(channel, 0.0)
+                elapsed = time.monotonic() - last
+                if elapsed < 1.0:
+                    await asyncio.sleep(1.0 - elapsed)
+                resp = await self._call_api_inner(action, params)
+                self._last_api_call_at[channel] = time.monotonic()
+                return resp
+        return await self._call_api_inner(action, params)
+
+    async def _call_api_inner(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        """发送 API 请求核心逻辑（不含限流）。"""
         if not self.ws or _is_ws_closed(self.ws) or not self._running:
             raise RuntimeError("WebSocket not connected")
 

@@ -898,6 +898,34 @@ async function saveExperience() {
 // ── Skills ────────────────────────────────────────────
 let _skillsCache = null;
 let _currentSkillConfig = null;
+let _githubMonitorRepos = [];
+
+// ── Skill 自定义配置注册表 ─────────────────────────────
+// 任何 Skill 可通过在此添加条目获得专用可视化配置 UI，
+// 替代默认的“参数表单 + JSON 文本域”。
+//
+// 条目格式:
+//   { render, collect, modalWidth? }
+//     render(config, meta) → html_string  渲染配置表单
+//     collect(config, meta) → object      收集表单数据为 config 对象
+//     modalWidth?: string                  模态框最大宽度（默认 "560px"）
+//
+// 新增自定义 Skill 时在此注册即可，openSkillConfig / saveSkillConfig
+// 会自动分发到对应 render/collect。
+const _skillConfigRenderers = {
+
+  github_monitor: {
+    render(config, meta) {
+      return _renderGithubMonitorConfig(config);
+    },
+    collect(config, meta) {
+      return _collectGithubMonitorConfig();
+    },
+    modalWidth: '740px',
+  },
+
+  // registry end
+};
 
 async function loadSkills() {
   if (!currentPersona) return;
@@ -1046,6 +1074,14 @@ async function openSkillConfig(name) {
       document.body.appendChild(modal);
     }
 
+    // 查找是否注册了自定义配置 UI
+    const renderer = _skillConfigRenderers[name];
+
+    const modalInner = modal.querySelector('div');
+    if (modalInner) {
+      modalInner.style.maxWidth = (renderer && renderer.modalWidth) || '560px';
+    }
+
     $('skillConfigTitle').textContent = `${name} 配置`;
     const body = $('skillConfigBody');
 
@@ -1059,33 +1095,41 @@ async function openSkillConfig(name) {
       </div>
     `;
 
-    // 参数配置表单
-    const params = meta.parameters || [];
-    if (params.length) {
-      html += '<div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px"><h4 style="margin:0 0 12px;font-size:14px">运行时参数</h4>';
-      params.forEach((p) => {
-        const raw = config[p.name] !== undefined ? config[p.name] : p.default;
-        const val = raw !== undefined && raw !== null ? raw : '';
-        const required = p.required ? ' *' : '';
-        html += `<div class="form-group" style="margin-bottom:12px">`;
-        html += `<label>${p.name}${required} <span style="color:var(--text-2);font-size:12px">(${p.type})</span></label>`;
-        html += `<input type="text" id="skillParam_${p.name}" value="${val}" placeholder="${p.description || ''}">`;
-        if (p.description) {
-          html += `<div style="font-size:12px;color:var(--text-2);margin-top:4px">${p.description}</div>`;
-        }
-        html += `</div>`;
-      });
-      html += '</div>';
-    }
+    if (renderer) {
+      html += renderer.render(config, meta);
+    } else {
+      // 通用：参数配置表单
+      const params = meta.parameters || [];
+      if (params.length) {
+        html += '<div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px"><h4 style="margin:0 0 12px;font-size:14px">运行时参数</h4>';
+        params.forEach((p) => {
+          const raw = config[p.name] !== undefined ? config[p.name] : p.default;
+          const val = raw !== undefined && raw !== null ? raw : '';
+          const required = p.required ? ' *' : '';
+          html += `<div class="form-group" style="margin-bottom:12px">`;
+          html += `<label>${p.name}${required} <span style="color:var(--text-2);font-size:12px">(${p.type})</span></label>`;
+          html += `<input type="text" id="skillParam_${p.name}" value="${val}" placeholder="${p.description || ''}">`;
+          if (p.description) {
+            html += `<div style="font-size:12px;color:var(--text-2);margin-top:4px">${p.description}</div>`;
+          }
+          html += `</div>`;
+        });
+        html += '</div>';
+      }
 
-    // 自由配置区域（用于 API Key 等额外配置）
-    html += `
-      <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px">
-        <h4 style="margin:0 0 12px;font-size:14px">额外配置（JSON）</h4>
-        <div style="font-size:12px;color:var(--text-2);margin-bottom:8px">用于配置 API Key 等 Skill 专属参数，格式为 JSON 对象</div>
-        <textarea id="skillCfgExtra" rows="4" style="font-family:monospace;font-size:13px" placeholder='{"api_key": "xxx", "base_url": "https://..."}'>${JSON.stringify(config, null, 2)}</textarea>
-      </div>
-    `;
+      // JSON 文本域：仅在无参数（唯一配置途径）或已有额外数据时显示
+      const paramNames = new Set((meta.parameters || []).map(p => p.name));
+      const extraKeys = Object.keys(config).filter(k => !paramNames.has(k));
+      if (paramNames.size === 0 || extraKeys.length > 0) {
+        html += `
+          <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px">
+            <h4 style="margin:0 0 12px;font-size:14px">额外配置（JSON）</h4>
+            <div style="font-size:12px;color:var(--text-2);margin-bottom:8px">用于配置 API Key 等 Skill 专属参数，格式为 JSON 对象</div>
+            <textarea id="skillCfgExtra" rows="4" style="font-family:monospace;font-size:13px" placeholder='{"api_key": "xxx", "base_url": "https://..."}'>${JSON.stringify(config, null, 2)}</textarea>
+          </div>
+        `;
+      }
+    }
 
     body.innerHTML = html;
     $('skillConfigModal').style.display = 'flex';
@@ -1097,47 +1141,64 @@ async function openSkillConfig(name) {
 function closeSkillConfig() {
   $('skillConfigModal').style.display = 'none';
   _currentSkillConfig = null;
+  _githubMonitorRepos = [];
+  // 恢复默认模态框宽度
+  const modal = $('skillConfigModal');
+  if (modal) {
+    const modalInner = modal.querySelector('div');
+    if (modalInner) modalInner.style.maxWidth = '560px';
+  }
 }
 
 async function saveSkillConfig() {
   if (!_currentSkillConfig || !currentPersona) return;
-  const { name, meta } = _currentSkillConfig;
+  const { name, meta, config: oldConfig } = _currentSkillConfig;
   const enabled = $('skillCfgEnabled').checked;
 
-  // 收集参数值
-  const config = {};
-  const params = meta.parameters || [];
-  params.forEach((p) => {
-    const el = $(`skillParam_${p.name}`);
-    if (el) {
-      const v = el.value.trim();
-      if (v !== '') {
-        // 尝试类型转换
-        if (p.type === 'int' || p.type === 'integer') {
-          const n = parseInt(v, 10);
-          if (!isNaN(n)) config[p.name] = n;
-        } else if (p.type === 'float' || p.type === 'number') {
-          const n = parseFloat(v);
-          if (!isNaN(n)) config[p.name] = n;
-        } else if (p.type === 'bool' || p.type === 'boolean') {
-          config[p.name] = v.toLowerCase() === 'true' || v === '1';
-        } else {
-          config[p.name] = v;
+  // 查找是否注册了自定义配置 UI
+  const renderer = _skillConfigRenderers[name];
+
+  let config;
+  if (renderer && renderer.collect) {
+    config = renderer.collect(oldConfig, meta);
+  } else {
+    // 通用：收集参数值
+    config = {};
+    const params = meta.parameters || [];
+    params.forEach((p) => {
+      const el = $(`skillParam_${p.name}`);
+      if (el) {
+        const v = el.value.trim();
+        if (v !== '') {
+          if (p.type === 'int' || p.type === 'integer') {
+            const n = parseInt(v, 10);
+            if (!isNaN(n)) config[p.name] = n;
+          } else if (p.type === 'float' || p.type === 'number') {
+            const n = parseFloat(v);
+            if (!isNaN(n)) config[p.name] = n;
+          } else if (p.type === 'bool' || p.type === 'boolean') {
+            config[p.name] = v.toLowerCase() === 'true' || v === '1';
+          } else {
+            config[p.name] = v;
+          }
         }
       }
-    }
-  });
+    });
 
-  // 合并额外配置
-  try {
-    const extraText = $('skillCfgExtra').value.trim();
-    if (extraText) {
-      const extra = JSON.parse(extraText);
-      Object.assign(config, extra);
+    // 合并额外 JSON 配置（文本域可能未渲染）
+    const extraEl = $('skillCfgExtra');
+    if (extraEl) {
+      try {
+        const extraText = extraEl.value.trim();
+        if (extraText) {
+          const extra = JSON.parse(extraText);
+          Object.assign(config, extra);
+        }
+      } catch (e) {
+        toast('额外配置 JSON 格式错误', 'error');
+        return;
+      }
     }
-  } catch (e) {
-    toast('额外配置 JSON 格式错误', 'error');
-    return;
   }
 
   try {
@@ -1145,7 +1206,6 @@ async function saveSkillConfig() {
     if (res.success) {
       toast('配置已保存', 'success');
       closeSkillConfig();
-      // 刷新列表
       loadSkills();
     } else {
       toast(res.error || '保存失败', 'error');
@@ -1153,6 +1213,199 @@ async function saveSkillConfig() {
   } catch (e) {
     toast('保存失败', 'error');
   }
+}
+
+// ── GitHub Monitor 自定义配置（由 _skillConfigRenderers 注册） ──
+
+const GITHUB_MONITOR_EVENT_TYPES = [
+  { key: 'issues', label: 'Issues', desc: '新建 / 关闭 / 重开' },
+  { key: 'pulls', label: 'Pull Requests', desc: '开启 / 合并 / 关闭' },
+  { key: 'releases', label: 'Releases', desc: '新版本发布' },
+  { key: 'comments', label: '评论', desc: 'Issue / PR / Commit 评论' },
+  { key: 'pushes', label: '推送', desc: '代码推送' },
+];
+
+function _renderGithubMonitorConfig(config) {
+  const repos = (config.repos || []).map((r, i) => ({ ...r, _idx: i }));
+  _githubMonitorRepos = JSON.parse(JSON.stringify(repos));
+  const pollSeconds = config.poll_seconds !== undefined ? config.poll_seconds : 120;
+  const apiBaseUrl = config.api_base_url || 'https://api.github.com';
+
+  let html = `
+    <!-- 全局轮询间隔 -->
+    <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;margin-bottom:16px">
+      <h4 style="margin:0 0 8px;font-size:14px">⏱️ 轮询间隔</h4>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="number" id="ghPollSeconds" value="${pollSeconds}" min="30" max="3600" step="10"
+          style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;width:100px"
+          oninput="_githubUpdatePollSeconds(this.value)">
+        <span style="font-size:13px;color:var(--text)">秒</span>
+        <span style="font-size:12px;color:var(--text-2)">（30-3600，默认 120）</span>
+      </div>
+    </div>
+
+    <!-- API 地址 -->
+    <div style="margin-bottom:16px">
+      <h4 style="margin:0 0 8px;font-size:14px">🌐 GitHub API 地址</h4>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="text" id="ghApiBaseUrl" value="${apiBaseUrl}"
+          placeholder="https://api.github.com"
+          style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;max-width:400px">
+      </div>
+      <div style="font-size:11px;color:var(--text-2);margin-top:4px">
+        国内可改用镜像，如 <code>https://ghproxy.com/https://api.github.com</code>
+      </div>
+    </div>
+
+    <!-- 监控仓库列表 -->
+    <div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h4 style="margin:0;font-size:14px">📦 监控仓库</h4>
+        <button class="btn small success" onclick="_githubAddRepo()" style="padding:4px 12px;font-size:12px">➕ 添加仓库</button>
+      </div>
+      <div style="font-size:12px;color:var(--text-2);margin-bottom:12px">
+        配置要监控的 GitHub 仓库，检测到新事件时将自动截图并播报。可在下方为每个仓库独立配置事件类型和通知目标群。
+      </div>
+      <div id="githubMonitorRepoList">
+        ${_renderGithubRepoList()}
+      </div>
+    </div>
+  `;
+
+  return html;
+}
+
+function _renderGithubRepoList() {
+  if (!_githubMonitorRepos.length) {
+    return '<div style="color:var(--text-2);padding:20px;text-align:center;border:1px dashed var(--border);border-radius:8px">暂无监控仓库，点击「添加仓库」开始配置</div>';
+  }
+  return _githubMonitorRepos.map((repo) => _renderGithubRepoCard(repo)).join('');
+}
+
+function _renderGithubRepoCard(repo) {
+  const idx = repo._idx;
+  const events = repo.events || [];
+  return `
+    <div class="github-repo-card" style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;background:var(--bg-2)">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
+        <div style="display:flex;gap:8px;align-items:center;flex:1">
+          <input type="text" id="ghRepoOwner_${idx}" value="${repo.owner || ''}"
+            placeholder="owner" style="flex:1;min-width:80px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px"
+            oninput="_githubUpdateRepo(${idx},'owner',this.value)">
+          <span style="color:var(--text-2);font-size:18px">/</span>
+          <input type="text" id="ghRepoName_${idx}" value="${repo.repo || ''}"
+            placeholder="repo" style="flex:1;min-width:80px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px"
+            oninput="_githubUpdateRepo(${idx},'repo',this.value)">
+        </div>
+        <button class="btn small danger" onclick="_githubRemoveRepo(${idx})" style="margin-left:8px;flex-shrink:0">✕ 删除</button>
+      </div>
+
+      <!-- 事件类型勾选 -->
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:6px">监控事件</label>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          ${GITHUB_MONITOR_EVENT_TYPES.map(et => {
+            const checked = events.includes(et.key) ? ' checked' : '';
+            return `
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:13px;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px 10px;white-space:nowrap">
+                <input type="checkbox"${checked} onchange="_githubToggleEvent(${idx},'${et.key}',this.checked)">
+                <span>${et.label}</span>
+                <span style="font-size:11px;color:var(--text-2)">${et.desc}</span>
+              </label>
+            `;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- 目标群 -->
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">通知目标群（群号，多个用逗号分隔）</label>
+        <input type="text" id="ghRepoGroups_${idx}" value="${(repo.groups || []).join(', ')}"
+          placeholder="例如: 123456789, 987654321"
+          style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px"
+          oninput="_githubUpdateRepo(${idx},'groups_str',this.value)">
+      </div>
+
+      <!-- GitHub Token -->
+      <div>
+        <label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">GitHub Token <span style="color:var(--text-2)">（可选，避免 API 频率限制）</span></label>
+        <input type="password" id="ghRepoToken_${idx}" value="${repo.github_token || ''}"
+          placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+          style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px"
+          oninput="_githubUpdateRepo(${idx},'github_token',this.value)">
+        <div style="font-size:11px;color:var(--text-2);margin-top:4px">提供 Token 后 API 速率限制从 60/小时 → 5000/小时</div>
+      </div>
+    </div>
+  `;
+}
+
+function _githubAddRepo() {
+  const idx = _githubMonitorRepos.length;
+  _githubMonitorRepos.push({
+    _idx: idx,
+    owner: '',
+    repo: '',
+    events: ['issues', 'pulls', 'releases'],
+    groups: [],
+    github_token: '',
+    groups_str: '',
+  });
+  _githubRefreshRepoList();
+}
+
+function _githubRemoveRepo(idx) {
+  _githubMonitorRepos = _githubMonitorRepos.filter(r => r._idx !== idx);
+  // 重新分配 _idx
+  _githubMonitorRepos.forEach((r, i) => { r._idx = i; });
+  _githubRefreshRepoList();
+}
+
+function _githubUpdateRepo(idx, field, value) {
+  const repo = _githubMonitorRepos.find(r => r._idx === idx);
+  if (!repo) return;
+  if (field === 'groups_str') {
+    repo.groups_str = value;
+    repo.groups = value.split(',').map(s => s.trim()).filter(Boolean);
+  } else {
+    repo[field] = value;
+  }
+}
+
+function _githubToggleEvent(idx, eventKey, checked) {
+  const repo = _githubMonitorRepos.find(r => r._idx === idx);
+  if (!repo) return;
+  if (!repo.events) repo.events = [];
+  if (checked) {
+    if (!repo.events.includes(eventKey)) repo.events.push(eventKey);
+  } else {
+    repo.events = repo.events.filter(e => e !== eventKey);
+  }
+}
+
+function _githubUpdatePollSeconds(value) {
+  // 值由 DOM 直接读取，此 handler 仅用于 oninput 绑定
+}
+
+function _githubRefreshRepoList() {
+  const el = $('githubMonitorRepoList');
+  if (el) {
+    el.innerHTML = _renderGithubRepoList();
+  }
+}
+
+function _collectGithubMonitorConfig() {
+  const repos = _githubMonitorRepos.map(r => ({
+    owner: (r.owner || '').trim(),
+    repo: (r.repo || '').trim(),
+    events: r.events || [],
+    groups: r.groups || [],
+    github_token: (r.github_token || '').trim(),
+  })).filter(r => r.owner && r.repo);
+  const pollEl = $('ghPollSeconds');
+  const pollSeconds = pollEl ? Math.max(30, Math.min(3600, parseInt(pollEl.value, 10) || 120)) : 120;
+  const apiEl = $('ghApiBaseUrl');
+  const apiBaseUrl = apiEl ? (apiEl.value || '').trim() || 'https://api.github.com' : 'https://api.github.com';
+  return { repos, poll_seconds: pollSeconds, api_base_url: apiBaseUrl };
 }
 
 // ── Plugins ───────────────────────────────────────────
@@ -1307,45 +1560,280 @@ async function openPluginDetail(name) {
     }
     modal.style.display = 'flex';
 
-    // 加载权限配置
-    await loadPluginConfigForm(name);
+    // 加载权限配置和自定义配置
+    console.log('openPluginDetail res:', res);
+    console.log('res.settings:', res.settings);
+    console.log('res.settings type:', typeof res.settings);
+    console.log('res.settings keys:', res.settings ? Object.keys(res.settings) : 'null');
+    await loadPluginConfigForm(name, res.settings, res.parameters);
   } catch (e) {
     toast('加载插件详情失败', 'error');
   }
 }
 
-async function loadPluginConfigForm(name) {
+async function loadPluginConfigForm(name, settings, parameters) {
+  console.log('loadPluginConfigForm called with:', { name, settings, parameters });
+  console.log('settings JSON:', JSON.stringify(settings));
+  console.log('settings keys:', settings ? Object.keys(settings) : 'null');
+  
   try {
     const cfg = await get(`/plugins/${name}/config`);
     $('pluginCfgDevOnly').checked = cfg.developer_only || false;
-    $('pluginCfgGroupWhitelist').value = (cfg.group_whitelist || []).join('\n');
     $('pluginCfgGroupBlacklist').value = (cfg.group_blacklist || []).join('\n');
     $('pluginCfgRateLimit').value = cfg.rate_limit_calls_per_minute || 60;
   } catch (e) {
     console.warn('加载插件配置失败', e);
   }
+
+  // 渲染自定义配置表单
+  const settingsContainer = $('pluginDetailSettings');
+  const settingsForm = $('pluginSettingsForm');
+  
+  console.log('settingsContainer:', settingsContainer, 'settingsForm:', settingsForm);
+  
+  // 初始化定时配置数据（自动识别所有 schedule 类型的配置）
+  _pluginScheduleData = {};
+  if (settings) {
+    for (const [key, value] of Object.entries(settings)) {
+      if (Array.isArray(value) && value.length > 0 && 
+          typeof value[0] === 'object' && 'time' in value[0] && 'duration' in value[0]) {
+        _pluginScheduleData[key] = value.map(s => ({ ...s }));
+      }
+    }
+  }
+  
+  console.log('_pluginScheduleData:', _pluginScheduleData);
+  console.log('settings check:', settings, 'keys:', settings ? Object.keys(settings) : 'null');
+  
+  if (settings && Object.keys(settings).length > 0) {
+    settingsContainer.style.display = 'block';
+    const rendered = renderPluginSettingsForm(settings, parameters);
+    console.log('rendered form:', rendered);
+    settingsForm.innerHTML = rendered;
+  } else {
+    settingsContainer.style.display = 'none';
+    settingsForm.innerHTML = '';
+  }
+}
+
+function renderPluginSettingsForm(settings, parameters) {
+  // 根据参数定义和当前设置渲染表单
+  const knownParams = new Map();
+  (parameters || []).forEach(p => knownParams.set(p.name, p));
+  
+  const fields = [];
+  const renderedKeys = new Set();
+  
+  // 第一步：根据 parameters 定义渲染表单
+  for (const param of (parameters || [])) {
+    const key = param.name;
+    const value = settings?.[key];
+    
+    if (renderedKeys.has(key)) continue;
+    renderedKeys.add(key);
+    
+    const type = param.type || 'str';
+    const desc = param.description || '';
+    const defaultVal = param.default;
+    
+    if (type === 'boolean') {
+      fields.push(`
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" data-setting-key="${key}" ${value ? 'checked' : ''}>
+            <span>${param.name}</span>
+          </label>
+          ${desc ? `<span style="color:var(--text-3);font-size:11px;margin-left:24px">${desc}</span>` : ''}
+        </div>
+      `);
+    } else if (type === 'int' || type === 'number') {
+      fields.push(`
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:block;margin-bottom:4px">${param.name}</label>
+          <input type="number" data-setting-key="${key}" value="${value ?? defaultVal ?? 0}"
+            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;width:150px">
+          ${desc ? `<span style="color:var(--text-3);font-size:11px;margin-left:8px">${desc}</span>` : ''}
+        </div>
+      `);
+    } else if (type === 'string' || type === 'str') {
+      fields.push(`
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:block;margin-bottom:4px">${param.name}</label>
+          <input type="text" data-setting-key="${key}" value="${value ?? defaultVal ?? ''}"
+            style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;width:100%">
+          ${desc ? `<span style="color:var(--text-3);font-size:11px">${desc}</span>` : ''}
+        </div>
+      `);
+    } else if (type === 'list' || type === 'array') {
+      const listVal = Array.isArray(value) ? value : (defaultVal ? [defaultVal] : []);
+      fields.push(`
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:block;margin-bottom:4px">${param.name}</label>
+          <div id="pluginList_${key}" style="margin-bottom:8px">
+            ${listVal.map((v, i) => `
+              <div style="display:flex;gap:4px;margin-bottom:4px">
+                <input type="text" value="${v}" data-list-key="${key}" data-list-index="${i}"
+                  style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;flex:1">
+                <button class="btn small" onclick="removePluginListItem('${key}', ${i})" style="padding:2px 8px">✕</button>
+              </div>
+            `).join('')}
+          </div>
+          <button class="btn small" onclick="addPluginListItem('${key}')" style="padding:4px 12px;font-size:12px">+ 添加</button>
+          ${desc ? `<span style="color:var(--text-3);font-size:11px;margin-left:8px">${desc}</span>` : ''}
+        </div>
+      `);
+    }
+  }
+  
+  // 第二步：处理 settings 中存在但 parameters 中没有定义的复杂类型
+  for (const [key, value] of Object.entries(settings || {})) {
+    if (renderedKeys.has(key)) continue;
+    
+    // 检测 schedule 类型（数组，每个元素包含 time 和 duration）
+    if (Array.isArray(value) && value.length > 0 && 
+        typeof value[0] === 'object' && 'time' in value[0] && 'duration' in value[0]) {
+      renderedKeys.add(key);
+      fields.push(renderScheduleConfig(key, value));
+    }
+  }
+  
+  return fields.join('') || '<div style="color:var(--text-2);font-size:13px">暂无可配置项</div>';
+}
+
+// 渲染定时配置（通用 schedule 类型）
+function renderScheduleConfig(key, schedule) {
+  const scheduleId = `pluginSchedule_${key}`;
+  return `
+    <div class="form-group" style="margin-bottom:12px">
+      <label style="font-weight:600;margin-bottom:8px;display:block">${formatConfigKey(key)}</label>
+      <div id="${scheduleId}" style="margin-bottom:8px">
+        ${schedule.map((s, i) => `
+          <div class="schedule-item" style="display:flex;gap:8px;align-items:center;margin-bottom:6px" data-index="${i}">
+            <input type="time" value="${s.time || '22:00'}" 
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px"
+              onchange="updatePluginScheduleItem('${key}', ${i}, 'time', this.value)">
+            <span style="color:var(--text-2);font-size:12px">分析时长</span>
+            <input type="number" value="${s.duration || 1440}" min="1" max="10080"
+              style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;width:80px"
+              onchange="updatePluginScheduleItem('${key}', ${i}, 'duration', parseInt(this.value, 10))">
+            <span style="color:var(--text-2);font-size:12px">分钟</span>
+            <button class="btn small" style="padding:2px 8px;font-size:11px" onclick="removePluginScheduleItem('${key}', ${i})">✕</button>
+          </div>
+        `).join('')}
+      </div>
+      <button class="btn small" style="padding:4px 12px;font-size:12px" onclick="addPluginScheduleItem('${key}')">+ 添加定时</button>
+    </div>
+  `;
+}
+
+// 格式化配置 key 为可读名称
+function formatConfigKey(key) {
+  return key.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
+}
+
+// 插件定时配置辅助函数（支持多个 schedule key）
+let _pluginScheduleData = {};
+
+function updatePluginScheduleItem(key, index, field, value) {
+  if (!_pluginScheduleData[key]) _pluginScheduleData[key] = [];
+  if (!_pluginScheduleData[key][index]) _pluginScheduleData[key][index] = {};
+  _pluginScheduleData[key][index][field] = value;
+}
+
+function addPluginScheduleItem(key) {
+  if (!_pluginScheduleData[key]) _pluginScheduleData[key] = [];
+  _pluginScheduleData[key].push({ time: '22:00', duration: 1440 });
+  renderPluginScheduleList(key);
+}
+
+function removePluginScheduleItem(key, index) {
+  if (_pluginScheduleData[key]) {
+    _pluginScheduleData[key].splice(index, 1);
+    renderPluginScheduleList(key);
+  }
+}
+
+function renderPluginScheduleList(key) {
+  const container = $(`pluginSchedule_${key}`);
+  if (!container || !_pluginScheduleData[key]) return;
+  
+  container.innerHTML = _pluginScheduleData[key].map((s, i) => `
+    <div class="schedule-item" style="display:flex;gap:8px;align-items:center;margin-bottom:6px" data-index="${i}">
+      <input type="time" value="${s.time || '22:00'}" 
+        style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px"
+        onchange="updatePluginScheduleItem('${key}', ${i}, 'time', this.value)">
+      <span style="color:var(--text-2);font-size:12px">分析时长</span>
+      <input type="number" value="${s.duration || 1440}" min="1" max="10080"
+        style="background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;width:80px"
+        onchange="updatePluginScheduleItem('${key}', ${i}, 'duration', parseInt(this.value, 10))">
+      <span style="color:var(--text-2);font-size:12px">分钟</span>
+      <button class="btn small" style="padding:2px 8px;font-size:11px" onclick="removePluginScheduleItem('${key}', ${i})">✕</button>
+    </div>
+  `).join('');
+}
+
+function addPluginListItem(key) {
+  console.log('addPluginListItem called for:', key);
+}
+
+function removePluginListItem(key, index) {
+  console.log('removePluginListItem called for:', key, index);
 }
 
 async function savePluginConfig() {
   if (!_currentPluginName) return;
-  const body = {
+  
+  // 收集权限配置
+  const permBody = {
     developer_only: $('pluginCfgDevOnly').checked,
-    group_whitelist: $('pluginCfgGroupWhitelist').value.split('\n').map(s => s.trim()).filter(Boolean),
     group_blacklist: $('pluginCfgGroupBlacklist').value.split('\n').map(s => s.trim()).filter(Boolean),
     rate_limit_calls_per_minute: parseInt($('pluginCfgRateLimit').value, 10) || 60,
   };
+  
+  // 收集自定义配置
+  const settingsBody = {};
+  
+  // 处理 schedule 配置（支持多个 key）
+  for (const [key, schedule] of Object.entries(_pluginScheduleData)) {
+    if (Array.isArray(schedule) && schedule.length > 0) {
+      settingsBody[key] = schedule;
+    }
+  }
+  
+  // 处理其他配置项
+  const settingInputs = document.querySelectorAll('[data-setting-key]');
+  settingInputs.forEach(input => {
+    const key = input.getAttribute('data-setting-key');
+    if (input.type === 'checkbox') {
+      settingsBody[key] = input.checked;
+    } else if (input.type === 'number') {
+      settingsBody[key] = parseFloat(input.value) || 0;
+    } else {
+      settingsBody[key] = input.value;
+    }
+  });
+  
   try {
-    const res = await fetch(API + `/plugins/${_currentPluginName}/config`, {
+    // 保存权限配置
+    const permRes = await fetch(API + `/plugins/${_currentPluginName}/config`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(permBody),
     });
-    const data = await res.json();
-    if (data.success) {
+    const permData = await permRes.json();
+    
+    // 保存自定义配置（如果有）
+    let settingsData = { success: true };
+    if (Object.keys(settingsBody).length > 0) {
+      const settingsRes = await post(`/plugins/${_currentPluginName}/settings`, { settings: settingsBody });
+      settingsData = settingsRes;
+    }
+    
+    if (permData.success && settingsData.success) {
       toast('✅ 配置已保存（需重启人格生效）', 'success');
       closePluginDetail();
     } else {
-      toast(data.error || '保存失败', 'error');
+      toast(permData.error || settingsData.error || '保存失败', 'error');
     }
   } catch (e) {
     toast('保存失败: ' + e.message, 'error');
