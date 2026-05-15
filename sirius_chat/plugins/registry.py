@@ -205,11 +205,15 @@ class PluginRegistry:
 
         return None
 
-    def get_plugin_descriptions(self) -> str:
+    def get_plugin_descriptions(self, caller_is_developer: bool = False) -> str:
         """生成 Plugin 指令描述文本（用于 LLM Cognition Prompt）。
 
         注意：LLM 兜底只在规则匹配未命中时触发，因此不输出触发词（前缀/关键词/正则），
         只输出语义理解所需信息：插件名、功能描述、参数和 NL 示例。
+
+        Args:
+            caller_is_developer: 调用者是否为开发者。如果为 False，则不返回
+                developer_only=True 的插件描述，避免向普通用户暴露开发者专用插件。
 
         Returns:
             格式化的 Plugin 描述文本，如：
@@ -221,7 +225,14 @@ class PluginRegistry:
         for definition in self._definitions.values():
             if not definition.commands:
                 continue
-            desc = definition.description or definition.display_name
+            # developer_only 插件仅对开发者可见
+            if definition.permissions.developer_only and not caller_is_developer:
+                continue
+            desc = (definition.display_name or definition.name)
+            if definition.description:
+                # 只取第一句话（到第一个句号），避免长描述诱导 LLM 误判
+                short_desc = definition.description.split("。")[0].split("，")[0]
+                desc = f"{short_desc}（{definition.name}）"
             lines.append(f"- {definition.name}: {desc}")
 
             # 参数信息（帮助 LLM 知道有哪些参数及类型）
@@ -229,18 +240,9 @@ class PluginRegistry:
                 param_parts: list[str] = []
                 for p in definition.parameters:
                     required = "必填" if p.required else "可选"
-                    param_info = f"{p.name} ({p.type}, {required})"
-                    if p.description:
-                        param_info += f" - {p.description}"
+                    param_info = f"{p.name} ({required})"
                     param_parts.append(param_info)
                 lines.append(f"  参数: {'; '.join(param_parts)}")
-
-            # NL 示例（帮助 LLM 理解自然语言如何映射到参数）
-            if definition.natural_language and definition.natural_language.examples:
-                nl_text = "、".join(
-                    f'"{e}"' for e in definition.natural_language.examples[:3]
-                )
-                lines.append(f"  NL示例: {nl_text}")
 
         return "\n".join(lines)
 

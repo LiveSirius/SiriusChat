@@ -46,6 +46,19 @@ class EngineProxy:
             task_name="plugin_generate",
         )
 
+    async def generate_text_analysis(self, prompt: str, *, group_id: str = "", **kwargs: Any) -> str:
+        """调用引擎的 _generate() 使用分析小模型生成结构化分析文本。
+
+        用于 Plugin 内部的轻量分析任务（如事件链摘要、话题标签提取），
+        走 plugin_analyze 任务路由，使用更快/更便宜的 analysis_model。
+        """
+        return await self._engine._generate(
+            system_prompt=prompt,
+            messages=[],
+            group_id=group_id,
+            task_name="plugin_analyze",
+        )
+
     def get_persona_name(self) -> str:
         """获取当前人格名称。"""
         if self._engine is None:

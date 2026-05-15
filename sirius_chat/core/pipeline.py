@@ -95,6 +95,7 @@ class PipelineMixin(_Base):
         *,
         sender_type: str = "human",
         multimodal_inputs: list[dict[str, str]] | None = None,
+        caller_is_developer: bool = False,
     ) -> tuple[IntentAnalysisV3, EmotionState, list[dict[str, Any]], Any]:
         """Cognitive layer: unified emotion + intent + empathy + memory retrieval."""
         # Build context from recent working memory (exclude current message)
@@ -112,6 +113,7 @@ class PipelineMixin(_Base):
             content, user_id, group_id, context_messages,
             sender_type=sender_type,
             multimodal_inputs=multimodal_inputs,
+            caller_is_developer=caller_is_developer,
         )
         cognition_duration_ms = round((time.perf_counter() - t0) * 1000, 2)
         if self.cognition_analyzer._last_request is not None:
@@ -350,12 +352,24 @@ class PipelineMixin(_Base):
 
         # === ✅ Plugin 命令执行路径（v1.2+）===
         if decision.strategy == ResponseStrategy.PLUGIN and decision.plugin_intent:
-            return await self._execute_plugin_command(
-                decision=decision,
-                message=message,
-                group_id=group_id,
-                user_id=user_id,
-            ) if hasattr(self, '_execute_plugin_command') else {"content": "", "strategy": "plugin"}
+            if hasattr(self, '_execute_plugin_command'):
+                plugin_result = await self._execute_plugin_command(
+                    decision=decision,
+                    message=message,
+                    group_id=group_id,
+                    user_id=user_id,
+                )
+                # 插件成功返回了有效回复 → 直接返回
+                if plugin_result.get("reply") and not plugin_result.get("error"):
+                    return plugin_result
+                # 插件执行失败 → 回退到普通意图流程
+                logger.info(
+                    "插件 %s 执行失败（error=%s），降级为普通意图流程",
+                    decision.plugin_intent,
+                    plugin_result.get("error", "未知"),
+                )
+            # 不强制覆盖策略，让 decision 自然流过后续的 rhythm/gap 检查
+            # 消息本身有高 directed_score，如果阈值条件满足会自然入队延迟队列
 
         # Rhythm context for style adaptation
         recent_msgs = self._get_recent_messages(group_id, n=10)

@@ -66,6 +66,8 @@ class PluginCommandMeta:
     max_tokens: int = 500
     temperature: float = 0.8
     mood_hint: str = ""
+    # 执行超时
+    timeout: float = 0.0                   # 单次执行超时秒数，0 使用默认值
     # 内部引用
     handler: Callable[..., Any] | None = None   # 绑定的方法
     handler_is_async: bool = False              # 是否为异步方法
@@ -104,6 +106,7 @@ def command(
     max_tokens: int = 500,
     temperature: float = 0.8,
     mood_hint: str = "",
+    timeout: float = 0.0,
 ) -> Callable[[F], F]:
     """声明式指令注册装饰器。
 
@@ -162,6 +165,7 @@ def command(
         max_tokens=max_tokens,
         temperature=temperature,
         mood_hint=mood_hint,
+        timeout=timeout,
     )
 
     def decorator(func: F) -> F:
@@ -229,6 +233,7 @@ def discover_commands(instance: object) -> dict[str, PluginCommandMeta]:
                 max_tokens=meta.max_tokens,
                 temperature=meta.temperature,
                 mood_hint=meta.mood_hint,
+                timeout=meta.timeout,
                 handler=bound,
                 handler_is_async=meta.handler_is_async,
             )
@@ -244,9 +249,9 @@ def discover_commands(instance: object) -> dict[str, PluginCommandMeta]:
 
 # 类型注解 → 转换函数 映射
 _TYPE_COERCERS: dict[type, Any] = {
-    int: lambda v: int(v) if v is not None else None,
-    float: lambda v: float(v) if v is not None else None,
-    bool: lambda v: str(v).lower() in ("true", "1", "yes") if v is not None else False,
+    int: lambda v: int(v) if v not in (None, "") else 0,
+    float: lambda v: float(v) if v not in (None, "") else 0.0,
+    bool: lambda v: str(v).lower() in ("true", "1", "yes") if v not in (None, "") else False,
     str: lambda v: str(v) if v is not None else "",
 }
 
@@ -318,6 +323,22 @@ async def dispatch_command_stream(
     except (ValueError, TypeError) as exc:
         return [PluginResponse.fail(f"无法解析处理器签名: {exc}")]
 
+    # 解析字符串注解（兼容 from __future__ import annotations 导致的字符串化）
+    try:
+        from typing import get_type_hints
+        resolved_hints = get_type_hints(handler, include_extras=False)
+    except Exception:
+        resolved_hints = {}
+
+    # 打印注解解析结果（调试用）
+    if any(isinstance(p.annotation, str) for p in sig.parameters.values() if p.name not in ("self", "cls")):
+        logger.info(
+            "插件 %s 指令 %s 字符串注解已解析：%s",
+            getattr(instance, '_name', '?'),
+            cmd.command,
+            {k: v for k, v in resolved_hints.items()},
+        )
+
     bound_args: dict[str, Any] = {}
     for param_name, param in sig.parameters.items():
         if param_name in ("self", "cls"):
@@ -325,9 +346,37 @@ async def dispatch_command_stream(
         annotation = param.annotation
         if annotation is inspect.Parameter.empty:
             annotation = str
+        # 如果注解是字符串（from __future__ import annotations 导致），用 get_type_hints 解析
+        if isinstance(annotation, str) and param_name in resolved_hints:
+            annotation = resolved_hints[param_name]
         if param_name in cmd.kwargs:
             raw = cmd.kwargs[param_name].value
-            bound_args[param_name] = _coerce_param(raw, annotation)
+            coerced = _coerce_param(raw, annotation)
+            # 类型校验：如果转换后的值与注解类型不匹配，回退到参数默认值
+            if isinstance(annotation, type) and not isinstance(coerced, annotation):
+                logger.info(
+                    "插件 %s 指令 %s 参数 %s 类型不匹配: 值=%r(%s) 期望=%s，使用默认值",
+                    getattr(instance, '_name', '?'),
+                    cmd.command,
+                    param_name,
+                    coerced,
+                    type(coerced).__name__,
+                    annotation.__name__,
+                )
+                if param.default is not inspect.Parameter.empty:
+                    bound_args[param_name] = param.default
+                elif annotation is int:
+                    bound_args[param_name] = 0
+                elif annotation is float:
+                    bound_args[param_name] = 0.0
+                elif annotation is bool:
+                    bound_args[param_name] = False
+                elif annotation is str:
+                    bound_args[param_name] = ""
+                else:
+                    bound_args[param_name] = None
+            else:
+                bound_args[param_name] = coerced
         elif param_name in cmd.flags:
             bound_args[param_name] = True
         elif param.default is not inspect.Parameter.empty:
@@ -341,6 +390,14 @@ async def dispatch_command_stream(
         slot_name = f"_{i}"
         if slot_name not in bound_args:
             bound_args[slot_name] = arg.value
+
+    # ── 打印参数解析结果（调试用）──
+    logger.info(
+        "插件 %s 指令 %s 参数绑定结果：%s",
+        getattr(instance, '_name', '?'),
+        cmd.command,
+        {k: (v, type(v).__name__) for k, v in bound_args.items()},
+    )
 
     # ── 调用 handler（支持流式）──
     return await _invoke_handler(handler, bound_args, meta, instance)

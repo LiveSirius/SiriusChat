@@ -57,8 +57,15 @@ _DEFAULT_TASK_REGISTRY: dict[str, TaskConfig] = {
         timeout=20.0,
         fallback_model="deepseek-chat",
     ),
+    # Plugin 分析任务 → 小模型
+    "plugin_analyze": TaskConfig(
+        model_name="gpt-4o-mini",
+        temperature=0.5,
+        max_tokens=1024,
+        timeout=30.0,
+        fallback_model="deepseek-chat",
+    ),
 }
-
 # Urgency thresholds for escalation
 _URGENCY_ESCALATE = 80  # urgency > 80 → use stronger model
 _URGENCY_CRITICAL = 95  # urgency > 95 → strongest model + more tokens

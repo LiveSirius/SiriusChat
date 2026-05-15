@@ -198,7 +198,8 @@ class EngineRuntime:
             return
 
         perms = definition.permissions
-        for key in ("group_whitelist", "group_blacklist", "user_whitelist"):
+        # 只同步 group_blacklist（白名单由主引擎统一管控）
+        for key in ("group_blacklist",):
             if key in plugin_config:
                 setattr(perms, key, list(plugin_config[key]))
         if "developer_only" in plugin_config:

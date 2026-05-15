@@ -243,6 +243,9 @@ class PluginLoader:
     def install_dependencies(dependencies: list[str]) -> tuple[int, int]:
         """自动安装插件依赖，优先使用 uv pip install，回退到 pip install。
 
+        特殊处理：
+            - playwright: 安装后自动执行 playwright install chromium
+
         Returns:
             (成功数, 失败数)
         """
@@ -261,6 +264,8 @@ class PluginLoader:
             uv_available = result.returncode == 0
         except Exception:
             pass
+
+        needs_chromium = "playwright" in dependencies
 
         for dep in dependencies:
             dep = dep.strip()
@@ -284,6 +289,21 @@ class PluginLoader:
             except Exception as exc:
                 logger.warning("依赖安装异常 [%s]: %s", dep, exc)
                 fail_count += 1
+
+        # playwright 需要额外安装 chromium 浏览器
+        if needs_chromium:
+            install_cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+            logger.info("安装 Chromium 浏览器: %s", " ".join(install_cmd))
+            try:
+                result = subprocess.run(
+                    install_cmd, capture_output=True, text=True, timeout=300.0
+                )
+                if result.returncode == 0:
+                    logger.info("Chromium 安装成功")
+                else:
+                    logger.warning("Chromium 安装失败: %s", result.stderr.strip()[-200:])
+            except Exception as exc:
+                logger.warning("Chromium 安装异常: %s", exc)
 
         return success_count, fail_count
 

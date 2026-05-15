@@ -50,7 +50,7 @@ class _EmotionalGroupChatEngineBase:
 
     if TYPE_CHECKING:
         def _perception(self, group_id: str, message: Any, participants: Any) -> str: ...
-        async def _cognition(self, content: str, user_id: str, group_id: str, *, sender_type: str = "human", multimodal_inputs: list[dict[str, str]] | None = None) -> tuple[Any, Any, list[Any], Any]: ...
+        async def _cognition(self, content: str, user_id: str, group_id: str, *, sender_type: str = "human", multimodal_inputs: list[dict[str, str]] | None = None, caller_is_developer: bool = False) -> tuple[Any, Any, list[Any], Any]: ...
         def _decision(self, intent: Any, emotion: Any, group_id: str, user_id: str, sender_type: str = "human") -> Any: ...
         async def _execution(self, decision: Any, message: Any, intent: Any, emotion: Any, memories: list[Any], group_id: str, empathy: Any, user_id: str) -> dict[str, Any]: ...
         def _background_update(self, group_id: str, message: Any, emotion: Any, intent: Any, user_id: str) -> None: ...
@@ -145,6 +145,8 @@ class _EmotionalGroupChatEngineBase:
             # 表情包系统
             "sticker_tag_extract": analysis_model,
             "sticker_preference_generate": analysis_model,
+            # Plugin 分析任务 → 小模型
+            "plugin_analyze": analysis_model,
         }
         # 优先使用 orchestration.json 中的 task_models 细粒度覆盖
         orch_task_models = orch.get("task_models")
@@ -321,6 +323,9 @@ class _EmotionalGroupChatEngineBase:
         content = message.content
         self._current_adapter_type = message.adapter_type or ""
 
+        # 获取当前发送者的 developer 状态（用于插件权限过滤）
+        caller_is_developer = participants[0].is_developer if participants else False
+
         # 1. Perception (resolves stable user_id for the sender)
         user_id = self._perception(group_id, message, participants)
         speaker = message.speaker or "有人"
@@ -361,6 +366,7 @@ class _EmotionalGroupChatEngineBase:
                 content, user_id, group_id,
                 sender_type=message.sender_type,
                 multimodal_inputs=message.multimodal_inputs,
+                caller_is_developer=caller_is_developer,
             )
             # 回写图片描述到 basic_memory
             if intent.image_caption:
@@ -384,6 +390,7 @@ class _EmotionalGroupChatEngineBase:
             content, user_id, group_id,
             sender_type=message.sender_type,
             multimodal_inputs=message.multimodal_inputs,
+            caller_is_developer=caller_is_developer,
         )
 
         # 如果 cognition 生成了图片描述，回写到 basic_memory 最后一条 entry
@@ -1126,7 +1133,6 @@ class _EmotionalGroupChatEngineBase:
 
             # Start feedback observation
             if feedback_observer is not None:
-                from datetime import datetime, timezone
                 sent_at = datetime.now(timezone.utc).isoformat()
                 asyncio.create_task(
                     feedback_observer.observe(record.sticker_id, group_id, sent_at, wait_seconds=15.0)

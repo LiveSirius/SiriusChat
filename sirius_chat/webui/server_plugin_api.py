@@ -1,7 +1,9 @@
-"""WebUI Plugin 管理 API — 全局 Plugin 查阅、启停控制与源码编辑。
+"""WebUI Plugin 管理 API — 全局 Plugin 查阅、启停控制与配置管理。
 
 Plugin 目录位于项目根 plugins/（与 data/ 同级），
-启用/禁用状态持久化到 plugins/_enabled.json。
+配置持久化到 plugins/_config.json。
+
+v1.2+: 支持插件自定义配置（如 chat_analyzer 的时间配置）
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from aiohttp import web
 
 from sirius_chat.plugins.loader import PluginLoader
 from sirius_chat.plugins.models import PluginDefinition
+from sirius_chat.plugins.config import get_config_manager
 
 LOG = logging.getLogger("sirius.webui")
 
@@ -30,34 +33,9 @@ def _plugins_dir(manager: Any) -> Path:
     return Path(manager.data_path).parent / "plugins"
 
 
-def _enabled_config_path(manager: Any) -> Path:
-    """获取 _enabled.json 路径。"""
-    return _plugins_dir(manager) / "_enabled.json"
-
-
-def _config_path(manager: Any) -> Path:
-    """获取 _config.json 路径（插件权限等运行时配置）。"""
-    return _plugins_dir(manager) / "_config.json"
-
-
-def _load_enabled_config(manager: Any) -> dict[str, bool]:
-    """加载启用/禁用配置。"""
-    path = _enabled_config_path(manager)
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def _save_enabled_config(manager: Any, config: dict[str, bool]) -> None:
-    """保存启用/禁用配置。"""
-    path = _enabled_config_path(manager)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+def _get_config_manager(manager: Any) -> Any:
+    """获取配置管理器实例。"""
+    return get_config_manager(_plugins_dir(manager))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -73,11 +51,11 @@ async def api_plugins_get(request: web.Request, manager: Any) -> web.Response:
     try:
         loader = PluginLoader(plugins_dir)
         definitions = loader.load_all_definitions()
-        enabled_config = _load_enabled_config(manager)
+        config_manager = _get_config_manager(manager)
 
         plugins: list[dict[str, Any]] = []
         for d in definitions:
-            is_enabled = enabled_config.get(d.name, True)
+            plugin_config = config_manager.get_config(d.name)
             source_file = _find_source_file(d.source_path) if d.source_path else None
 
             plugins.append({
@@ -86,7 +64,7 @@ async def api_plugins_get(request: web.Request, manager: Any) -> web.Response:
                 "description": d.description,
                 "version": d.version,
                 "author": d.author,
-                "enabled": is_enabled,
+                "enabled": plugin_config["enabled"],
                 "commands": [
                     {
                         "name": c.name,
@@ -117,6 +95,7 @@ async def api_plugins_get(request: web.Request, manager: Any) -> web.Response:
                 "nl_examples": d.natural_language.examples if d.natural_language else [],
                 "source_file": source_file,
                 "has_source": source_file is not None,
+                "settings": plugin_config["settings"],
             })
 
         return _json_response({"plugins": plugins})
@@ -148,13 +127,14 @@ async def api_plugin_detail_get(request: web.Request, manager: Any) -> web.Respo
 
     plugins_dir = _plugins_dir(manager)
     loader = PluginLoader(plugins_dir)
+    config_manager = _get_config_manager(manager)
 
     definitions = loader.load_all_definitions()
     definition = next((d for d in definitions if d.name == plugin_name), None)
     if definition is None:
         return _json_response({"error": f"插件 {plugin_name} 不存在"}, 404)
 
-    enabled_config = _load_enabled_config(manager)
+    plugin_config = config_manager.get_config(plugin_name)
     source_file = _find_source_file(definition.source_path)
     source_content = ""
 
@@ -172,7 +152,7 @@ async def api_plugin_detail_get(request: web.Request, manager: Any) -> web.Respo
         "description": definition.description,
         "version": definition.version,
         "author": definition.author,
-        "enabled": enabled_config.get(definition.name, True),
+        "enabled": plugin_config["enabled"],
         "commands": [
             {
                 "name": c.name,
@@ -205,6 +185,8 @@ async def api_plugin_detail_get(request: web.Request, manager: Any) -> web.Respo
         "nl_slots": definition.natural_language.slots if definition.natural_language else {},
         "source_file": source_file,
         "source_content": source_content,
+        "settings": plugin_config["settings"],
+        "permissions": plugin_config["permissions"],
     })
 
 
@@ -226,9 +208,8 @@ async def api_plugin_toggle(request: web.Request, manager: Any) -> web.Response:
     enabled = bool(body.get("enabled", True))
 
     try:
-        config = _load_enabled_config(manager)
-        config[plugin_name] = enabled
-        _save_enabled_config(manager, config)
+        config_manager = _get_config_manager(manager)
+        config_manager.set_enabled(plugin_name, enabled)
         LOG.info("插件 %s enabled=%s", plugin_name, enabled)
         return _json_response({"success": True, "plugin": plugin_name, "enabled": enabled})
     except Exception as exc:
@@ -237,50 +218,30 @@ async def api_plugin_toggle(request: web.Request, manager: Any) -> web.Response:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# API: 插件配置（群白名单等权限设置）
+# API: 插件权限配置
 # ═══════════════════════════════════════════════════════════════════════
 
-def _load_plugin_config(manager: Any) -> dict[str, dict[str, Any]]:
-    """加载 plugins/_config.json。"""
-    path = _config_path(manager)
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def _save_plugin_config(manager: Any, config: dict[str, dict[str, Any]]) -> None:
-    """保存 plugins/_config.json。"""
-    path = _config_path(manager)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
-
-
 async def api_plugin_config_get(request: web.Request, manager: Any) -> web.Response:
-    """GET /api/plugins/{plugin_name}/config — 获取插件运行时配置。"""
+    """GET /api/plugins/{plugin_name}/config — 获取插件权限配置。"""
     plugin_name = str(request.match_info.get("plugin_name", "")).strip()
     if not plugin_name:
         return _json_response({"error": "缺少 plugin_name"}, 400)
 
-    all_config = _load_plugin_config(manager)
-    plugin_config = all_config.get(plugin_name, {})
+    config_manager = _get_config_manager(manager)
+    permissions = config_manager.get_permissions(plugin_name)
 
     return _json_response({
         "plugin": plugin_name,
-        "group_whitelist": plugin_config.get("group_whitelist", []),
-        "group_blacklist": plugin_config.get("group_blacklist", []),
-        "user_whitelist": plugin_config.get("user_whitelist", []),
-        "developer_only": plugin_config.get("developer_only", False),
-        "rate_limit_calls_per_minute": plugin_config.get("rate_limit_calls_per_minute", 60),
+        "group_blacklist": permissions.get("group_blacklist", []),
+        "group_whitelist": permissions.get("group_whitelist", []),
+        "user_whitelist": permissions.get("user_whitelist", []),
+        "developer_only": permissions.get("developer_only", False),
+        "rate_limit_calls_per_minute": permissions.get("rate_limit_calls_per_minute", 60),
     })
 
 
 async def api_plugin_config_post(request: web.Request, manager: Any) -> web.Response:
-    """PUT /api/plugins/{plugin_name}/config — 保存插件运行时配置。"""
+    """PUT /api/plugins/{plugin_name}/config — 保存插件权限配置。"""
     plugin_name = str(request.match_info.get("plugin_name", "")).strip()
     if not plugin_name:
         return _json_response({"error": "缺少 plugin_name"}, 400)
@@ -290,27 +251,108 @@ async def api_plugin_config_post(request: web.Request, manager: Any) -> web.Resp
     except Exception:
         return _json_response({"error": "Invalid JSON"}, 400)
 
-    all_config = _load_plugin_config(manager)
-    plugin_config = all_config.get(plugin_name, {})
+    config_manager = _get_config_manager(manager)
+    permissions: dict[str, Any] = {}
 
     for key in ("group_whitelist", "group_blacklist", "user_whitelist"):
         if key in body and isinstance(body[key], list):
-            plugin_config[key] = [str(v).strip() for v in body[key] if str(v).strip()]
+            permissions[key] = [str(v).strip() for v in body[key] if str(v).strip()]
 
     if "developer_only" in body:
-        plugin_config["developer_only"] = bool(body["developer_only"])
+        permissions["developer_only"] = bool(body["developer_only"])
 
     if "rate_limit_calls_per_minute" in body:
         try:
-            plugin_config["rate_limit_calls_per_minute"] = int(body["rate_limit_calls_per_minute"])
+            permissions["rate_limit_calls_per_minute"] = int(body["rate_limit_calls_per_minute"])
         except (ValueError, TypeError):
             pass
 
-    all_config[plugin_name] = plugin_config
-    _save_plugin_config(manager, all_config)
+    config_manager.update_permissions(plugin_name, permissions)
 
-    LOG.info("插件配置已保存: %s", plugin_name)
+    LOG.info("插件权限配置已保存: %s", plugin_name)
     return _json_response({"success": True, "plugin": plugin_name})
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# API: 插件自定义配置（如 chat_analyzer 的时间配置）
+# ═══════════════════════════════════════════════════════════════════════
+
+async def api_plugin_settings_get(request: web.Request, manager: Any) -> web.Response:
+    """GET /api/plugins/{plugin_name}/settings — 获取插件自定义配置。"""
+    plugin_name = str(request.match_info.get("plugin_name", "")).strip()
+    if not plugin_name:
+        return _json_response({"error": "缺少 plugin_name"}, 400)
+
+    config_manager = _get_config_manager(manager)
+    settings = config_manager.get_settings(plugin_name)
+
+    return _json_response({
+        "plugin": plugin_name,
+        "settings": settings,
+    })
+
+
+async def api_plugin_settings_post(request: web.Request, manager: Any) -> web.Response:
+    """POST /api/plugins/{plugin_name}/settings — 更新插件自定义配置（完整覆盖）。"""
+    plugin_name = str(request.match_info.get("plugin_name", "")).strip()
+    if not plugin_name:
+        return _json_response({"error": "缺少 plugin_name"}, 400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"error": "Invalid JSON"}, 400)
+
+    settings = body.get("settings", {})
+    if not isinstance(settings, dict):
+        return _json_response({"error": "settings 必须是对象"}, 400)
+
+    config_manager = _get_config_manager(manager)
+    config_manager.update_settings(plugin_name, settings)
+
+    LOG.info("插件自定义配置已保存: %s", plugin_name)
+    return _json_response({"success": True, "plugin": plugin_name, "settings": settings})
+
+
+async def api_plugin_setting_post(request: web.Request, manager: Any) -> web.Response:
+    """POST /api/plugins/{plugin_name}/settings/{key} — 设置单个配置项。"""
+    plugin_name = str(request.match_info.get("plugin_name", "")).strip()
+    key = str(request.match_info.get("key", "")).strip()
+    
+    if not plugin_name:
+        return _json_response({"error": "缺少 plugin_name"}, 400)
+    if not key:
+        return _json_response({"error": "缺少 key"}, 400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"error": "Invalid JSON"}, 400)
+
+    value = body.get("value")
+
+    config_manager = _get_config_manager(manager)
+    config_manager.set_setting(plugin_name, key, value)
+
+    LOG.info("插件配置项已保存: %s.%s", plugin_name, key)
+    return _json_response({"success": True, "plugin": plugin_name, "key": key, "value": value})
+
+
+async def api_plugin_setting_delete(request: web.Request, manager: Any) -> web.Response:
+    """DELETE /api/plugins/{plugin_name}/settings/{key} — 删除单个配置项。"""
+    plugin_name = str(request.match_info.get("plugin_name", "")).strip()
+    key = str(request.match_info.get("key", "")).strip()
+    
+    if not plugin_name:
+        return _json_response({"error": "缺少 plugin_name"}, 400)
+    if not key:
+        return _json_response({"error": "缺少 key"}, 400)
+
+    config_manager = _get_config_manager(manager)
+    config_manager.delete_setting(plugin_name, key)
+
+    LOG.info("插件配置项已删除: %s.%s", plugin_name, key)
+    return _json_response({"success": True, "plugin": plugin_name, "key": key})
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -318,7 +360,7 @@ async def api_plugin_config_post(request: web.Request, manager: Any) -> web.Resp
 # ═══════════════════════════════════════════════════════════════════════
 
 async def api_plugins_reload(request: web.Request, manager: Any) -> web.Response:
-    """POST /api/plugins/reload — 刷新插件列表（重新扫描目录）。"""
+    """POST /api/plugins/reload — 刷新插件列表和配置（热重载）。"""
     plugins_dir = _plugins_dir(manager)
     if not plugins_dir.exists():
         return _json_response({"plugins": []})
@@ -326,10 +368,12 @@ async def api_plugins_reload(request: web.Request, manager: Any) -> web.Response
     try:
         loader = PluginLoader(plugins_dir)
         definitions = loader.load_all_definitions()
-        enabled_config = _load_enabled_config(manager)
+        
+        config_manager = _get_config_manager(manager)
+        config_manager.reload()
 
         count = len(definitions)
-        enabled_count = sum(1 for d in definitions if enabled_config.get(d.name, True))
+        enabled_count = sum(1 for d in definitions if config_manager.get_enabled(d.name))
         LOG.info("插件刷新完成: %d 个 (启用 %d)", count, enabled_count)
 
         return _json_response({

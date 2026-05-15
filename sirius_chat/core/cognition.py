@@ -216,6 +216,7 @@ _CONTEXT_DEPENDENT_PATTERNS: tuple[str, ...] = (
 _LLM_COGNITION_PROMPT = """分析以下消息的【情感状态】、【社交意图】和【指向性】。
 
 {ai_identity}{conversation_context}消息：{message}
+
 {plugin_descriptions}
 要求输出 JSON：
 {{
@@ -225,8 +226,8 @@ _LLM_COGNITION_PROMPT = """分析以下消息的【情感状态】、【社交�
   "basic_emotion": "joy|anger|sadness|anxiety|loneliness|neutral",
   "social_intent": "help_seeking|emotional|social|silent|plugin_command",
   "intent_subtype": "tech_help|info_query|venting|seeking_empathy|topic_discussion|filler",
-  "plugin_intent": "如果 social_intent 是 plugin_command，从上方的【可用插件指令】列表中选择一个插件ID；如果用户的需求不匹配任何已列出的插件，social_intent 不应为 plugin_command；留空表示不匹配",
-  "plugin_slots": {{ "参数名": "从消息中提取的参数值" }}（如果 social_intent 是 plugin_command 且匹配了某个插件，按照该插件的参数定义提取参数值。{plugin_slots_hint} 如果 social_intent 不是 plugin_command，填写 {{}}）,
+  "plugin_intent": "仅当用户消息【明确请求】某个插件功能时才填写对应插件ID。消息只是提及相关概念（如聊到AI/天气/代码）不等于请求插件。如果不确定，留空。{plugin_slots_hint}",
+  "plugin_slots": {{ "参数名": 参数值（int/float类型传数字不要加引号，无对应信息时用默认值） }},
   "urgency_score": 0-100,
   "relevance_score": 0.0-1.0,
   "directed_score": 0.0-1.0,
@@ -242,7 +243,7 @@ _LLM_COGNITION_PROMPT = """分析以下消息的【情感状态】、【社交�
 - emotional: 表达情绪、寻求安慰
 - social: 闲聊、讨论、分享
 - silent: 无意义 filler（哈哈、确实、+1）
-- plugin_command: 用户消息是一个插件指令或自然语言形式的插件请求（如"帮我查一下北京的天气"、"roll 2d6"等）。当用户明确要求执行某个插件功能时使用此意图。
+- plugin_command: 【慎用】仅当用户消息是明确的插件功能请求时使用。判断标准：去掉插件后用户消息是否毫无意义？例如"帮我查一下北京的天气"去掉天气插件就没意义→是plugin_command；"今天天气真好"去掉天气插件仍是正常闲聊→social。消息中仅仅提到和插件相关的词语（如"天气"、"分析"）不等于插件请求。
 
 【评分标准】
 urgency_score（紧急程度，参考）：
@@ -322,6 +323,7 @@ class CognitionAnalyzer:
         *,
         sender_type: str = "human",
         multimodal_inputs: list[dict[str, str]] | None = None,
+        caller_is_developer: bool = False,
     ) -> tuple[EmotionState, IntentAnalysisV3, EmpathyStrategy]:
         """Joint analysis: emotion, intent, directedness, and empathy in one pass.
 
@@ -333,7 +335,7 @@ class CognitionAnalyzer:
 
         # 2. Rule-based intent classification (fallback only)
         social_intent, subtype, intent_confidence = self._classify_intent(
-            message, context_messages
+            message, context_messages, caller_is_developer=caller_is_developer
         )
         search_query = message  # fallback when no LLM or LLM fails
 
@@ -364,6 +366,7 @@ class CognitionAnalyzer:
                 llm_result = await self._llm_cognition(
                     message, context_messages, current_user_id=user_id, sender_type=sender_type,
                     multimodal_inputs=multimodal_inputs,
+                    caller_is_developer=caller_is_developer,
                 )
                 if llm_result is not None:
                     social_intent = llm_result["social_intent"]
@@ -375,36 +378,58 @@ class CognitionAnalyzer:
                     search_query = llm_result.get("search_query", message)
                     if text_emotion.confidence < 0.6:
                         text_emotion = llm_result["emotion"]
+                    # LLM 覆盖了 social_intent → 清除规则匹配残留的 plugin 信息
+                    if social_intent != SocialIntent.PLUGIN_COMMAND:
+                        plugin_intent = None
+                        plugin_confidence = 0.0
+                        plugin_slots = {}
+                        plugin_render_mode = "direct"
                     # 从 LLM 结果中提取 Plugin 字段（v1.2+）
+                    # 规则匹配已在 _classify_intent 中优先处理精确前缀，
+                    # 此处 LLM 返回 plugin_command 说明是自然语言触发（如"帮我查天气"）
                     if social_intent == SocialIntent.PLUGIN_COMMAND:
                         llm_plugin = llm_result.get("plugin_intent")
                         if llm_plugin:
-                            # 校验 plugin_intent 是否为已注册的插件
-                            validated = self._validate_plugin_intent(llm_plugin)
+                            validated = self._validate_plugin_intent(
+                                llm_plugin, caller_is_developer=caller_is_developer
+                            )
                             if validated:
                                 plugin_intent = validated
                                 plugin_confidence = max(plugin_confidence, intent_confidence)
+                                llm_slots = llm_result.get("plugin_slots", {})
+                                if isinstance(llm_slots, dict) and llm_slots:
+                                    plugin_slots.update(llm_slots)
                             else:
-                                # 无效的 plugin_intent → 降级为普通的 help_seeking
+                                # 无效的 plugin_intent → 降级
                                 logger.info(
-                                    "LLM plugin_intent '%s' 不在注册表中，降级为 help_seeking",
+                                    "LLM plugin_intent '%s' 未通过校验，降级为 help_seeking",
                                     llm_plugin,
                                 )
                                 social_intent = SocialIntent.HELP_SEEKING
                                 subtype = HelpSubtype.INFO_QUERY
-                        llm_slots = llm_result.get("plugin_slots", {})
-                        if isinstance(llm_slots, dict) and llm_slots:
-                            plugin_slots.update(llm_slots)
+                                plugin_intent = None
+                                plugin_confidence = 0.0
+                                plugin_slots = {}
+                        else:
+                            # plugin_command 但没有 plugin_intent → 降级
+                            social_intent = SocialIntent.HELP_SEEKING
+                            subtype = HelpSubtype.INFO_QUERY
                 else:
                     # LLM parse failure → safe SILENT
                     social_intent = SocialIntent.SILENT
                     subtype = SilentSubtype.IRRELEVANT
                     intent_confidence = 0.3
+                    plugin_intent = None
+                    plugin_confidence = 0.0
+                    plugin_slots = {}
             except Exception as exc:
                 logger.warning("LLM cognition failed: %s", exc)
                 social_intent = SocialIntent.SILENT
                 subtype = SilentSubtype.IRRELEVANT
                 intent_confidence = 0.3
+                plugin_intent = None
+                plugin_confidence = 0.0
+                plugin_slots = {}
 
         # 5. Emotion context fusion
         context_emotion = self._context_inference(user_id)
@@ -516,6 +541,14 @@ class CognitionAnalyzer:
             plugin_slots=plugin_slots,
             plugin_render_mode=plugin_render_mode,
         )
+
+        if plugin_intent:
+            logger.info(
+                "意图分析 → 插件 %s: confidence=%.2f, slots=%s",
+                plugin_intent,
+                plugin_confidence,
+                {k: (v, type(v).__name__) for k, v in plugin_slots.items()},
+            )
 
         # 8. Empathy strategy
         empathy = self.select_empathy_strategy(emotion, user_id)
@@ -679,6 +712,7 @@ class CognitionAnalyzer:
         current_user_id: str = "",
         sender_type: str = "human",
         multimodal_inputs: list[dict[str, str]] | None = None,
+        caller_is_developer: bool = False,
     ) -> dict[str, Any] | None:
         """Single LLM call for joint emotion + intent + directedness analysis."""
         from sirius_chat.providers.base import GenerationRequest, LLMProvider
@@ -722,8 +756,8 @@ class CognitionAnalyzer:
             conversation_context=conv_ctx,
             message=context_text + f"【当前消息】[{current_user_id}] {message}",
             ai_identity_note=ai_note,
-            plugin_descriptions=self._get_plugin_descriptions_for_prompt(),
-            plugin_slots_hint=self._get_plugin_slots_hint(),
+            plugin_descriptions=self._get_plugin_descriptions_for_prompt(caller_is_developer),
+            plugin_slots_hint=self._get_plugin_slots_hint(caller_is_developer),
         )
 
         # Check image caption cache before calling LLM.
@@ -1456,6 +1490,8 @@ class CognitionAnalyzer:
         self,
         message: str,
         context_messages: list[dict[str, Any]] | None = None,
+        *,
+        caller_is_developer: bool = False,
     ) -> tuple[SocialIntent, Any, float]:
         """分类消息的社交意图。
 
@@ -1467,7 +1503,7 @@ class CognitionAnalyzer:
         has_context = bool(context_messages)
 
         # === ✅ Plugin 命令匹配层（最高优先级，v1.2+）===
-        plugin_match = self._match_plugin_command(message)
+        plugin_match = self._match_plugin_command(message, caller_is_developer=caller_is_developer)
         if plugin_match is not None:
             return SocialIntent.PLUGIN_COMMAND, plugin_match, 0.95
 
@@ -1590,7 +1626,9 @@ class CognitionAnalyzer:
     # Plugin 命令匹配（v1.2+）
     # ------------------------------------------------------------------
 
-    def _match_plugin_command(self, message: str) -> "PluginMatchInfo | None":
+    def _match_plugin_command(
+        self, message: str, *, caller_is_developer: bool = False
+    ) -> "PluginMatchInfo | None":
         """尝试将用户消息匹配到已注册的 Plugin 命令。
 
         匹配优先级（从高到低）：
@@ -1599,6 +1637,7 @@ class CognitionAnalyzer:
 
         Args:
             message: 用户输入的原始文本
+            caller_is_developer: 调用者是否为开发者。非开发者不匹配 developer_only 插件。
 
         Returns:
             PluginMatchInfo 或 None
@@ -1612,6 +1651,11 @@ class CognitionAnalyzer:
                 # 构建 PluginMatchInfo 供上游使用
                 plugin_name = match_result.plugin_name
                 definition = self.plugin_registry.get(plugin_name)
+                if definition is None:
+                    return None
+                # 非开发者不匹配 developer_only 插件
+                if definition.permissions.developer_only and not caller_is_developer:
+                    return None
                 render_mode = definition.render.mode if definition else "direct"
 
                 # 尝试参数解析（如果有 LexedCommand）
@@ -1647,42 +1691,87 @@ class CognitionAnalyzer:
 
         return None
 
-    def _get_plugin_descriptions_for_prompt(self) -> str:
-        """生成 Plugin 指令描述文本（用于 LLM Cognition Prompt）。"""
+    def _get_plugin_descriptions_for_prompt(self, caller_is_developer: bool = False) -> str:
+        """生成 Plugin 指令描述文本（用于 LLM Cognition Prompt）。
+
+        仅输出极简描述，避免 LLM 被详细描述诱导误判 plugin_command。
+        """
         if self.plugin_registry is None:
             return ""
         try:
-            descriptions = self.plugin_registry.get_plugin_descriptions()
+            descriptions = self.plugin_registry.get_plugin_descriptions(caller_is_developer)
             if not descriptions:
                 return ""
-            return f"\n【可用插件指令】\n{descriptions}\n"
+            return (
+                "\n【可用插件指令 — 仅当用户消息明确请求以下功能时才标记为 plugin_command，"
+                "日常聊天中提到相关词语不等于插件请求】\n"
+                f"{descriptions}\n"
+            )
         except Exception:
             return ""
 
-    def _get_plugin_slots_hint(self) -> str:
-        """生成插件参数槽位提示（帮助 LLM 知道提取哪些字段名）。"""
+    def _get_plugin_slots_hint(self, caller_is_developer: bool = False) -> str:
+        """生成插件参数槽位提示（帮助 LLM 知道提取哪些字段名和期望类型）。"""
         if self.plugin_registry is None:
             return "（无插件）"
         try:
-            plugin_names = self.plugin_registry.plugin_names
-            if not plugin_names:
+            parts: list[str] = []
+            for name in self.plugin_registry.plugin_names:
+                definition = self.plugin_registry.get(name)
+                if definition is None:
+                    continue
+                if definition.permissions.developer_only and not caller_is_developer:
+                    continue
+                # 构建参数提示
+                param_hints: list[str] = []
+                if definition.natural_language and definition.natural_language.slots:
+                    for slot_name, slot_info in definition.natural_language.slots.items():
+                        slot_type = slot_info.get("type", "str")
+                        slot_desc = slot_info.get("description", "")
+                        slot_default = slot_info.get("default")
+                        hint = f"{slot_name}={slot_type}"
+                        if slot_desc:
+                            hint += f"({slot_desc})"
+                        if slot_default is not None:
+                            hint += f",默认={slot_default}"
+                        param_hints.append(hint)
+                elif definition.parameters:
+                    for param in definition.parameters:
+                        hint = f"{param.name}={param.type}"
+                        if param.description:
+                            hint += f"({param.description})"
+                        if param.default is not None:
+                            hint += f",默认={param.default}"
+                        param_hints.append(hint)
+                if param_hints:
+                    parts.append(f"{name}(参数: {', '.join(param_hints)})")
+                else:
+                    parts.append(name)
+            if not parts:
                 return "（无插件）"
-            return f"可选的插件ID有：{'、'.join(plugin_names)}，参数名见各插件定义"
+            return f"可用插件ID与参数：{'；'.join(parts)}。请从消息中提取对应参数值，数值类型请传数字（非空字符串）。"
         except Exception:
             return "（无插件）"
 
-    def _validate_plugin_intent(self, plugin_intent: str) -> str | None:
-        """校验 LLM 返回的 plugin_intent 是否为已注册的插件。
+    def _validate_plugin_intent(
+        self, plugin_intent: str, *, caller_is_developer: bool = False
+    ) -> str | None:
+        """校验 LLM 返回的 plugin_intent 是否为已注册且调用者可用的插件。
 
         Returns:
-            有效的 plugin_intent 或 None（无效时回退）
+            有效的 plugin_intent 或 None（无效/仅开发者可用时回退）
         """
         if not plugin_intent:
             return None
         if self.plugin_registry is None:
             return None
-        if self.plugin_registry.get(plugin_intent) is None:
+        definition = self.plugin_registry.get(plugin_intent)
+        if definition is None:
             logger.debug("LLM 返回了无效的 plugin_intent: %s，已降级", plugin_intent)
+            return None
+        # 非开发者不能使用 developer_only 插件
+        if definition.permissions.developer_only and not caller_is_developer:
+            logger.debug("LLM 返回了仅开发者可用的 plugin_intent: %s，已降级", plugin_intent)
             return None
         return plugin_intent
 

@@ -55,6 +55,7 @@ class PluginBase:
     _plugin_version: str = "1.0.0"
     _plugin_author: str = ""
     _plugin_events: list[dict[str, Any]] = []
+    _plugin_schedule: list[dict[str, Any]] = []  # [{"time": "HH:MM", "duration": 1440}, ...]
     _plugin_permissions: dict[str, Any] | None = None
     _plugin_nl_examples: list[str] = []
     _plugin_nl_slots: dict[str, dict[str, Any]] = {}

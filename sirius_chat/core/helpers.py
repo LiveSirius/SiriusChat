@@ -89,6 +89,13 @@ class HelpersMixin(_Base):
         if definition is None:
             return {"reply": f"[Plugin '{plugin_name}' 未找到]", "strategy": "plugin"}
 
+        logger.info(
+            "插件 %s 开始执行: raw_text=%r, slots=%s",
+            plugin_name,
+            getattr(message, 'content', '')[:120],
+            {k: (v, type(v).__name__) for k, v in getattr(decision, 'plugin_slots', {}).items()},
+        )
+
         # 解析指令
         from sirius_chat.plugins.lexer import parse_command
         from sirius_chat.plugins.models import CommandAST
@@ -109,6 +116,20 @@ class HelpersMixin(_Base):
                 raw_text=message.content,
                 kwargs={k: ArgNode(value=v, raw=str(v), type_hint="str")
                         for k, v in decision.plugin_slots.items()},
+            )
+            logger.info(
+                "插件 %s 指令解析（自然语言回退）：command=%s, slots=%s",
+                plugin_name,
+                cmd.command,
+                {k: (v.value, type(v.value).__name__) for k, v in cmd.kwargs.items()},
+            )
+        else:
+            logger.info(
+                "插件 %s 指令解析（精确匹配）：command=%s, kwargs=%s, args=[%s]",
+                plugin_name,
+                cmd.command,
+                {k: (v.value, type(v.value).__name__) for k, v in cmd.kwargs.items()},
+                ", ".join(str(a.value) for a in cmd.args),
             )
 
         # 确定调用者是否为开发者
@@ -157,12 +178,17 @@ class HelpersMixin(_Base):
         final_reply: str | None = None
         final_message_group: Any = None
         is_last = False  # 防御性初始化，避免空 results 时变量未定义
+        any_success = False  # 是否有任何成功的输出
+        last_error: str | None = None  # 最后一个失败的 result.error
         for i, result in enumerate(results):
             is_last = (i == len(results) - 1)
             if not result.success:
+                last_error = result.error or "未知错误"
                 if is_last:
-                    final_reply = f"[{definition.display_name or plugin_name}] 执行失败: {result.error}"
+                    final_reply = f"[{definition.display_name or plugin_name}] 执行失败: {last_error}"
                 continue
+
+            any_success = True
 
             if self._plugin_dispatcher is not None:
                 dispatch_output = await self._plugin_dispatcher.dispatch(
@@ -187,8 +213,8 @@ class HelpersMixin(_Base):
             else:
                 partial_replies.append(rendered)
 
-        # 将最终回复录入记忆链（与正常 Pipeline 回复一致）
-        if final_reply:
+        # 将最终回复录入记忆链（与正常 Pipeline 回复一致，仅成功时记录）
+        if final_reply and any_success:
             try:
                 self.basic_memory.add_entry(
                     group_id=group_id,
@@ -205,6 +231,7 @@ class HelpersMixin(_Base):
             "partial_replies": partial_replies,
             "strategy": "plugin",
             "message_group": final_message_group,
+            "error": None if any_success else (last_error or ("plugin_failed" if results else "no_results")),
         }
 
     def _register_passive_skills(self) -> None:

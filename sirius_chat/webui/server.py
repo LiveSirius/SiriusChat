@@ -77,6 +77,10 @@ from sirius_chat.webui.server_plugin_api import (
     api_plugin_toggle,
     api_plugin_config_get,
     api_plugin_config_post,
+    api_plugin_settings_get,
+    api_plugin_settings_post,
+    api_plugin_setting_post,
+    api_plugin_setting_delete,
     api_plugins_reload,
 )
 
@@ -235,6 +239,18 @@ class WebUIServer(_WebUIServer):
 
     async def api_plugin_config_post(self, request):
         return await api_plugin_config_post(request, self.persona_manager)
+
+    async def api_plugin_settings_get(self, request):
+        return await api_plugin_settings_get(request, self.persona_manager)
+
+    async def api_plugin_settings_post(self, request):
+        return await api_plugin_settings_post(request, self.persona_manager)
+
+    async def api_plugin_setting_post(self, request):
+        return await api_plugin_setting_post(request, self.persona_manager)
+
+    async def api_plugin_setting_delete(self, request):
+        return await api_plugin_setting_delete(request, self.persona_manager)
 
     async def api_plugins_reload(self, request):
         return await api_plugins_reload(request, self.persona_manager)

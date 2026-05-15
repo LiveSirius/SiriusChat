@@ -162,14 +162,17 @@ class PluginParameterDef:
 
 @dataclass(slots=True)
 class PluginPermissionDef:
-    """Plugin 权限定义。"""
+    """Plugin 权限定义。
+
+    group_whitelist/user_whitelist 已废弃：Plugin 默认可在所有引擎活跃群使用，由
+    主引擎白名单管控；group_blacklist 用于按群遮蔽特定 Plugin。
+    """
 
     developer_only: bool = False
-    adapter_types: list[str] = field(default_factory=list)      # 允许的平台列表
-    group_whitelist: list[str] = field(default_factory=list)    # 群白名单
+    adapter_types: list[str] = field(default_factory=list)
+    group_whitelist: list[str] = field(default_factory=list)    # 已废弃，由引擎白名单管控
     group_blacklist: list[str] = field(default_factory=list)    # 群黑名单
-    user_whitelist: list[str] = field(default_factory=list)     # 用户白名单
-    # 速率限制
+    user_whitelist: list[str] = field(default_factory=list)     # 已废弃
     rate_limit_calls_per_minute: int = 60
     rate_limit_calls_per_hour: int = 1000
 
