@@ -198,14 +198,18 @@ class EngineRuntime:
             return
 
         perms = definition.permissions
+        # 权限字段在 _config.json 中嵌套在 permissions 子对象下
+        perm_cfg = plugin_config.get("permissions", {})
+        if not isinstance(perm_cfg, dict):
+            perm_cfg = {}
         # 只同步 group_blacklist（白名单由主引擎统一管控）
         for key in ("group_blacklist",):
-            if key in plugin_config:
-                setattr(perms, key, list(plugin_config[key]))
-        if "developer_only" in plugin_config:
-            perms.developer_only = bool(plugin_config["developer_only"])
-        if "rate_limit_calls_per_minute" in plugin_config:
-            perms.rate_limit_calls_per_minute = int(plugin_config["rate_limit_calls_per_minute"])
+            if key in perm_cfg:
+                setattr(perms, key, list(perm_cfg[key]))
+        if "developer_only" in perm_cfg:
+            perms.developer_only = bool(perm_cfg["developer_only"])
+        if "rate_limit_calls_per_minute" in perm_cfg:
+            perms.rate_limit_calls_per_minute = int(perm_cfg["rate_limit_calls_per_minute"])
 
         # 将用户自定义 settings 写入 definition，供 Executor 注入 ctx.config
         settings = plugin_config.get("settings")

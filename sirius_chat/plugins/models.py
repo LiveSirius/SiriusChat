@@ -224,6 +224,7 @@ class PluginDefinition:
     # ── 内部字段 ──
     source_path: Path | None = None        # 插件文件夹路径
     _plugin_class: type | None = field(default=None, repr=False)  # PluginBase 子类
+    user_settings: dict[str, Any] = field(default_factory=dict, repr=False)  # 运行时用户配置
 
     @property
     def all_patterns(self) -> list[tuple[str, str, str]]:
