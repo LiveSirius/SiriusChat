@@ -37,9 +37,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
-from sirius_chat.github_webhook import GitHubWebhookServer
+from sirius_chat.github import GitHubWebhookServer, fetch_repo_events
+from sirius_chat.github.client import GitHubClient
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,6 @@ _DEFAULT_POLL_SECONDS = 120
 _MIN_BG_INTERVAL = 30
 _MAX_EVENTS_PER_PAGE = 30
 _MAX_COMMITS_IN_BODY = 5
-_MAX_API_RETRIES = 3
 _MAX_SCREENSHOT_RETRIES = 3
 
 # Webhook 模式运行时状态（模块级，由 on_load/on_unload 管理）
@@ -215,21 +214,7 @@ async def _poll_github_events(ctx: Any) -> None:
 
     now = time.monotonic()
 
-    # 尝试导入 httpx，如未安装则跳过本次轮询
-    try:
-        import httpx
-    except ImportError:
-        logger.warning("github_monitor: httpx 未安装，跳过轮询")
-        return
-
-    async with httpx.AsyncClient(
-        base_url=api_base_url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "SiriusChat-GitHub-Monitor/1.0",
-        },
-        timeout=httpx.Timeout(30.0),
-    ) as client:
+    async with GitHubClient(timeout=30.0) as client:
         for repo_cfg in repos:
             # 跳过 webhook 模式的仓库（由 Webhook 服务器实时推送处理）
             if repo_cfg.get("mode") == "webhook":
@@ -263,34 +248,12 @@ async def _poll_github_events(ctx: Any) -> None:
 
             since = last_ts.get(repo_key)
 
-            # 拉取事件（带重试）
+            # 拉取事件（带重试，per-repo token 通过 extra_headers 注入）
             logger.debug("github_monitor: 正在获取 %s 事件... (%s)", repo_key, api_base_url)
-            events: list[dict[str, Any]] = []
-            last_error = None
-            for attempt in range(1, _MAX_API_RETRIES + 1):
-                try:
-                    events = await _fetch_repo_events(client, owner, repo, github_token)
-                    break
-                except Exception:
-                    last_error = f"第 {attempt}/{_MAX_API_RETRIES} 次失败"
-                    if attempt < _MAX_API_RETRIES:
-                        logger.warning(
-                            "github_monitor: %s 拉取 %s 失败，%.1fs 后重试",
-                            last_error,
-                            repo_key,
-                            2.0 * attempt,
-                        )
-                        await asyncio.sleep(2.0 * attempt)
-                    else:
-                        logger.warning(
-                            "github_monitor: 拉取 %s 事件失败（共 %d 次）",
-                            repo_key,
-                            _MAX_API_RETRIES,
-                            exc_info=True,
-                        )
-            if last_error and not events:
-                continue
-
+            extra_headers: dict[str, str] = {}
+            if github_token:
+                extra_headers["Authorization"] = f"Bearer {github_token}"
+            events = await fetch_repo_events(client, owner, repo, extra_headers=extra_headers)
             if not events:
                 # API 调用成功但无事件，更新时间戳避免频繁空轮询
                 logger.debug("github_monitor: %s 无新事件", repo_key)
@@ -434,43 +397,6 @@ def _is_pr_merge_push_event(event: dict[str, Any]) -> bool:
     if not commits:
         return False
     return all(_PR_MERGE_COMMIT_PATTERN.match(c.get("message", "")) for c in commits)
-
-
-async def _fetch_repo_events(
-    client: Any,
-    owner: str,
-    repo: str,
-    token: str,
-) -> list[dict[str, Any]]:
-    """调用 GitHub Events API 拉取仓库最新事件列表。"""
-    headers: dict[str, str] = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    params: dict[str, int] = {"per_page": _MAX_EVENTS_PER_PAGE}
-    path = f"/repos/{quote(owner)}/{quote(repo)}/events"
-
-    resp = await client.get(path, headers=headers, params=params)
-
-    if resp.status_code in (403, 429):
-        logger.warning(
-            "github_monitor: %s/%s API %d（可能触发速率限制）",
-            owner,
-            repo,
-            resp.status_code,
-        )
-        return []
-
-    resp.raise_for_status()
-    data = resp.json()
-    events_list = data if isinstance(data, list) else []
-    logger.debug(
-        "github_monitor: %s/%s API 200, 获取到 %d 条事件",
-        owner,
-        repo,
-        len(events_list),
-    )
-    return events_list
 
 
 # ═══════════════════════════════════════════════════════════════════════
