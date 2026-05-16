@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from sirius_chat.core.engine_core import _EmotionalGroupChatEngineBase
 
     class _Base(_EmotionalGroupChatEngineBase): ...
+
 else:
     _Base = object
 
@@ -61,7 +62,7 @@ class HelpersMixin(_Base):
 
         # 同步更新 CognitionAnalyzer 的 plugin_registry
         if plugin_registry is not None:
-            cog = getattr(self, 'cognition_analyzer', None)
+            cog = getattr(self, "cognition_analyzer", None)
             if cog is not None:
                 cog.plugin_registry = plugin_registry
 
@@ -82,7 +83,7 @@ class HelpersMixin(_Base):
         if not plugin_name:
             return {"reply": None, "strategy": "plugin", "error": "no_plugin_name"}
 
-        if not hasattr(self, '_plugin_registry') or self._plugin_registry is None:
+        if not hasattr(self, "_plugin_registry") or self._plugin_registry is None:
             return {"reply": None, "strategy": "plugin", "error": "no_registry"}
 
         definition = self._plugin_registry.get(plugin_name)
@@ -92,8 +93,8 @@ class HelpersMixin(_Base):
         logger.info(
             "插件 %s 开始执行: raw_text=%r, slots=%s",
             plugin_name,
-            getattr(message, 'content', '')[:120],
-            {k: (v, type(v).__name__) for k, v in getattr(decision, 'plugin_slots', {}).items()},
+            getattr(message, "content", "")[:120],
+            {k: (v, type(v).__name__) for k, v in getattr(decision, "plugin_slots", {}).items()},
         )
 
         # 解析指令
@@ -114,8 +115,10 @@ class HelpersMixin(_Base):
             cmd = CommandAST(
                 command=fallback_command,
                 raw_text=message.content,
-                kwargs={k: ArgNode(value=v, raw=str(v), type_hint="str")
-                        for k, v in decision.plugin_slots.items()},
+                kwargs={
+                    k: ArgNode(value=v, raw=str(v), type_hint="str")
+                    for k, v in decision.plugin_slots.items()
+                },
             )
             logger.info(
                 "插件 %s 指令解析（自然语言回退）：command=%s, slots=%s",
@@ -134,10 +137,10 @@ class HelpersMixin(_Base):
 
         # 确定调用者是否为开发者
         caller_is_developer = False
-        if hasattr(self, 'user_manager'):
+        if hasattr(self, "user_manager"):
             try:
-                platform = getattr(message, 'channel', '')
-                ext_uid = getattr(message, 'channel_user_id', '')
+                platform = getattr(message, "channel", "")
+                ext_uid = getattr(message, "channel_user_id", "")
                 if platform and ext_uid:
                     resolved_uid = self.user_manager.resolve_user_id(
                         platform=platform, external_uid=ext_uid
@@ -145,7 +148,7 @@ class HelpersMixin(_Base):
                     if resolved_uid:
                         caller_profile = self.user_manager.get_user(resolved_uid, group_id)
                         caller_is_developer = bool(
-                            caller_profile and getattr(caller_profile, 'is_developer', False)
+                            caller_profile and getattr(caller_profile, "is_developer", False)
                         )
             except Exception:
                 pass
@@ -156,17 +159,19 @@ class HelpersMixin(_Base):
         msg_ctx = MessageContext(
             group_id=group_id,
             user_id=user_id,
-            channel=getattr(message, 'channel', ''),
-            channel_user_id=getattr(message, 'channel_user_id', ''),
-            message_id=getattr(message, 'message_id', ''),
-            content=getattr(message, 'content', ''),
-            speaker_name=getattr(message, 'speaker', ''),
+            channel=getattr(message, "channel", ""),
+            channel_user_id=getattr(message, "channel_user_id", ""),
+            message_id=getattr(message, "message_id", ""),
+            content=getattr(message, "content", ""),
+            speaker_name=getattr(message, "speaker", ""),
         )
 
         # 执行 Plugin → list[PluginResponse]
         results = await self._plugin_executor.execute(
-            plugin_name, cmd,
-            group_id=group_id, user_id=user_id,
+            plugin_name,
+            cmd,
+            group_id=group_id,
+            user_id=user_id,
             caller_is_developer=caller_is_developer,
             adapter=self._get_platform_adapter(),
             engine=self,
@@ -181,20 +186,24 @@ class HelpersMixin(_Base):
         any_success = False  # 是否有任何成功的输出
         last_error: str | None = None  # 最后一个失败的 result.error
         for i, result in enumerate(results):
-            is_last = (i == len(results) - 1)
+            is_last = i == len(results) - 1
             if not result.success:
                 last_error = result.error or "未知错误"
                 if is_last:
-                    final_reply = f"[{definition.display_name or plugin_name}] 执行失败: {last_error}"
+                    final_reply = (
+                        f"[{definition.display_name or plugin_name}] 执行失败: {last_error}"
+                    )
                 continue
 
             any_success = True
 
             if self._plugin_dispatcher is not None:
                 dispatch_output = await self._plugin_dispatcher.dispatch(
-                    result, definition,
+                    result,
+                    definition,
                     engine=self,
-                    group_id=group_id, user_id=user_id,
+                    group_id=group_id,
+                    user_id=user_id,
                 )
                 if dispatch_output.text is not None:
                     rendered = dispatch_output.text
@@ -231,7 +240,11 @@ class HelpersMixin(_Base):
             "partial_replies": partial_replies,
             "strategy": "plugin",
             "message_group": final_message_group,
-            "error": None if any_success else (last_error or ("plugin_failed" if results else "no_results")),
+            "error": (
+                None
+                if any_success
+                else (last_error or ("plugin_failed" if results else "no_results"))
+            ),
         }
 
     def _register_passive_skills(self) -> None:
@@ -243,6 +256,25 @@ class HelpersMixin(_Base):
         ctx = SkillEngineContextImpl(self)
         for skill in self._skill_registry.passive_skills():
             try:
+                # 生命周期：on_load（通过 asyncio.create_task 调度，与后台任务生命周期一致）
+                if skill._on_load_factory is not None:
+                    try:
+                        on_load_coro = skill._on_load_factory(ctx)
+                        if on_load_coro is not None and asyncio.iscoroutine(on_load_coro):
+                            task = asyncio.create_task(
+                                on_load_coro,
+                                name=f"passive_skill_on_load_{skill.name}",
+                            )
+                            self._bg_tasks.add(task)
+                            task.add_done_callback(self._bg_tasks.discard)
+                            logger.info("被动SKILL on_load 已调度: %s", skill.name)
+                    except Exception as exc:
+                        logger.warning("被动SKILL on_load 失败 (%s): %s", skill.name, exc)
+
+                # 生命周期：注册 on_unload
+                if skill._on_unload_factory is not None:
+                    self._passive_skill_unloaders.append((ctx, skill._on_unload_factory))
+
                 if skill._background_task_factory is not None:
                     specs = skill._background_task_factory(ctx)
                     if specs is None:
@@ -257,7 +289,11 @@ class HelpersMixin(_Base):
                         self._passive_skill_tasks[spec.name] = task
                         self._bg_tasks.add(task)
                         task.add_done_callback(self._bg_tasks.discard)
-                        logger.info("被动SKILL后台任务已注册: %s (间隔 %.1fs)", spec.name, spec.interval_seconds)
+                        logger.info(
+                            "被动SKILL后台任务已注册: %s (间隔 %.1fs)",
+                            spec.name,
+                            spec.interval_seconds,
+                        )
 
                 if skill._trigger_factory is not None:
                     trigger_specs = skill._trigger_factory(ctx)
@@ -267,7 +303,9 @@ class HelpersMixin(_Base):
                         trigger_specs = [trigger_specs]
                     for spec in trigger_specs:
                         self._passive_skill_triggers.setdefault(spec.event_type, []).append(spec)
-                        logger.info("被动SKILL触发器已注册: %s (事件: %s)", spec.name, spec.event_type)
+                        logger.info(
+                            "被动SKILL触发器已注册: %s (事件: %s)", spec.name, spec.event_type
+                        )
             except Exception as exc:
                 logger.warning("注册被动SKILL失败 (%s): %s", skill.name, exc)
 
@@ -312,7 +350,7 @@ class HelpersMixin(_Base):
 
     def _get_platform_adapter(self) -> Any:
         """获取平台适配器实例。引擎在 add_skill_bridge() 时直接持有。"""
-        return getattr(self, '_adapter', None)
+        return getattr(self, "_adapter", None)
 
     def _enhance_topic_relevance(
         self,
@@ -549,8 +587,7 @@ class HelpersMixin(_Base):
 
         user_messages = "\n".join(f"{i+1}. {t}" for i, t in enumerate(unique))
         system_prompt = (
-            "你是一名用户行为分析师。根据用户的最近发言，"
-            "推断其兴趣话题。只输出JSON，不要解释。"
+            "你是一名用户行为分析师。根据用户的最近发言，" "推断其兴趣话题。只输出JSON，不要解释。"
         )
         prompt = (
             f"以下是一名用户的最近 {len(unique)} 条发言：\n\n{user_messages}\n\n"
@@ -590,9 +627,7 @@ class HelpersMixin(_Base):
                 user_id,
                 interest_graph=interest_graph,
             )
-            self._log_inner_thought(
-                f"用户 {user_id} 画像更新: 兴趣={len(interest_graph)}个"
-            )
+            self._log_inner_thought(f"用户 {user_id} 画像更新: 兴趣={len(interest_graph)}个")
         except Exception:
             pass
 
@@ -641,9 +676,7 @@ class HelpersMixin(_Base):
             system_prompt = getattr(request, "system_prompt", "") or ""
             messages = getattr(request, "messages", []) or []
             sp_total = estimate_tokens(system_prompt)
-            um_total = sum(
-                estimate_tokens(str(m.get("content", ""))) for m in messages
-            )
+            um_total = sum(estimate_tokens(str(m.get("content", ""))) for m in messages)
             reply_text = getattr(request, "reply", "") or ""
             out_total = estimate_tokens(reply_text) if reply_text else 0
             breakdown_json = json.dumps(
@@ -687,7 +720,13 @@ class HelpersMixin(_Base):
             return "network_timeout"
         if "rate limit" in msg or "too many requests" in msg or "429" in msg:
             return "rate_limit"
-        if "authentication" in msg or "api key" in msg or "unauthorized" in msg or "401" in msg or "403" in msg:
+        if (
+            "authentication" in msg
+            or "api key" in msg
+            or "unauthorized" in msg
+            or "401" in msg
+            or "403" in msg
+        ):
             return "auth_error"
         if "context length" in msg or "maximum context" in msg or "too long" in msg:
             return "context_exceeded"

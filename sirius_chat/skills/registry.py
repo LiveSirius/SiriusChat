@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from sirius_chat.skills.models import SkillDefinition, SkillInvocationContext, SkillParameter
 from sirius_chat.skills.dependency_resolver import resolve_skill_dependencies
+from sirius_chat.skills.models import SkillDefinition, SkillInvocationContext, SkillParameter
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,12 @@ class SkillRegistry:
                 skill = self._load_skill_file(py_file)
                 if skill is not None:
                     self._skills[skill.name] = skill
-                    logger.info("新技能到手！%s v%s（从 %s 学来的）", skill.name, skill.version, py_file.name)
+                    logger.info(
+                        "新技能到手！%s v%s（从 %s 学来的）",
+                        skill.name,
+                        skill.version,
+                        py_file.name,
+                    )
             except Exception as exc:
                 logger.warning("加载SKILL文件失败 (%s): %s", py_file.name, exc)
         return max(0, len(self._skills) - baseline)
@@ -167,11 +172,18 @@ class SkillRegistry:
                     if py_file.name.startswith("_"):
                         continue
                     try:
-                        self._install_skill_dependencies(py_file, auto_install_deps=auto_install_deps)
+                        self._install_skill_dependencies(
+                            py_file, auto_install_deps=auto_install_deps
+                        )
                         skill = self._load_skill_file(py_file)
                         if skill is not None:
                             loaded_skills.append(skill)
-                            logger.info("内置技能 %s v%s 已重新加载（来源：%s）", skill.name, skill.version, py_file.name)
+                            logger.info(
+                                "内置技能 %s v%s 已重新加载（来源：%s）",
+                                skill.name,
+                                skill.version,
+                                py_file.name,
+                            )
                     except Exception as exc:
                         logger.warning("重载内置SKILL失败 (%s): %s", py_file.name, exc)
 
@@ -184,7 +196,9 @@ class SkillRegistry:
                 skill = self._load_skill_file(py_file)
                 if skill is not None:
                     loaded_skills.append(skill)
-                    logger.info("技能 %s v%s 刷新完毕（来源：%s）", skill.name, skill.version, py_file.name)
+                    logger.info(
+                        "技能 %s v%s 刷新完毕（来源：%s）", skill.name, skill.version, py_file.name
+                    )
             except Exception as exc:
                 logger.warning("重载SKILL文件失败 (%s): %s", py_file.name, exc)
 
@@ -219,12 +233,17 @@ class SkillRegistry:
         run_func = getattr(module, "run", None)
         bg_task_factory = getattr(module, "create_background_tasks", None)
         trigger_factory = getattr(module, "create_triggers", None)
+        on_load_factory = getattr(module, "create_on_load", None)
+        on_unload_factory = getattr(module, "create_on_unload", None)
         has_active = callable(run_func)
         has_passive = callable(bg_task_factory) or callable(trigger_factory)
 
         if not has_active and not has_passive:
             sys.modules.pop(module_name, None)
-            logger.warning("SKILL文件缺少 run()/create_background_tasks()/create_triggers(): %s", file_path.name)
+            logger.warning(
+                "SKILL文件缺少 run()/create_background_tasks()/create_triggers(): %s",
+                file_path.name,
+            )
             return None
 
         name = str(meta.get("name", file_path.stem)).strip()
@@ -286,6 +305,8 @@ class SkillRegistry:
             _run_func=run_func if has_active else None,
             _background_task_factory=bg_task_factory if callable(bg_task_factory) else None,
             _trigger_factory=trigger_factory if callable(trigger_factory) else None,
+            _on_load_factory=on_load_factory if callable(on_load_factory) else None,
+            _on_unload_factory=on_unload_factory if callable(on_unload_factory) else None,
         )
 
     def build_tool_descriptions(
@@ -338,7 +359,11 @@ class SkillRegistry:
                     param_parts: list[str] = []
                     for p in skill.parameters:
                         required_tag = "必填" if p.required else "可选"
-                        default_tag = f", 默认={p.default}" if not p.required and p.default is not None else ""
+                        default_tag = (
+                            f", 默认={p.default}"
+                            if not p.required and p.default is not None
+                            else ""
+                        )
                         param_parts.append(
                             f"    - {p.name} ({p.type}, {required_tag}{default_tag}): {p.description}"
                         )

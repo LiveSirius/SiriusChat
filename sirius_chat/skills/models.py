@@ -7,7 +7,7 @@ import enum
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Awaitable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from sirius_chat.config.models import ConfigParameter
 from sirius_chat.memory import UserProfile
@@ -58,7 +58,15 @@ class SkillResult:
         if isinstance(self.data, dict):
             lines: list[str] = []
             for key, value in self.data.items():
-                if key in {"_meta", "metadata", "internal_metadata", "text_blocks", "multimodal_blocks", "multimodal", "attachments"}:
+                if key in {
+                    "_meta",
+                    "metadata",
+                    "internal_metadata",
+                    "text_blocks",
+                    "multimodal_blocks",
+                    "multimodal",
+                    "attachments",
+                }:
                     continue
                 if isinstance(value, dict):
                     lines.append(f"{key}:")
@@ -185,6 +193,8 @@ class SkillDefinition:
     _run_func: Callable[..., Any] | None = field(default=None, repr=False)
     _background_task_factory: Callable[..., Any] | None = field(default=None, repr=False)
     _trigger_factory: Callable[..., Any] | None = field(default=None, repr=False)
+    _on_load_factory: Callable[..., Any] | None = field(default=None, repr=False)
+    _on_unload_factory: Callable[..., Any] | None = field(default=None, repr=False)
 
     def get_parameter_schema(self) -> list[dict[str, Any]]:
         """Return parameter definitions as dicts for prompt rendering."""
@@ -279,9 +289,7 @@ class SkillEngineContext(Protocol):
         """调用 LLM 生成文本。"""
         ...
 
-    def queue_pending_message(
-        self, group_id: str, text: str, adapter_type: str = ""
-    ) -> None:
+    def queue_pending_message(self, group_id: str, text: str, adapter_type: str = "") -> None:
         """将待发送消息放入引擎的待处理队列。"""
         ...
 
@@ -388,6 +396,7 @@ class SkillChainContext:
 
         Placeholders that cannot be resolved are left unchanged.
         """
+
         def _sub(value: str) -> str:
             def _replace(m: re.Match[str]) -> str:
                 expr = m.group(1)

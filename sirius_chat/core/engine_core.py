@@ -49,24 +49,60 @@ class _EmotionalGroupChatEngineBase:
     # ─── Mixin 方法桩声明（运行时由 PipelineMixin / BackgroundTasksMixin / HelpersMixin 提供）───
 
     if TYPE_CHECKING:
+
         def _perception(self, group_id: str, message: Any, participants: Any) -> str: ...
-        async def _cognition(self, content: str, user_id: str, group_id: str, *, sender_type: str = "human", multimodal_inputs: list[dict[str, str]] | None = None, caller_is_developer: bool = False) -> tuple[Any, Any, list[Any], Any]: ...
-        def _decision(self, intent: Any, emotion: Any, group_id: str, user_id: str, sender_type: str = "human") -> Any: ...
-        async def _execution(self, decision: Any, message: Any, intent: Any, emotion: Any, memories: list[Any], group_id: str, empathy: Any, user_id: str) -> dict[str, Any]: ...
-        def _background_update(self, group_id: str, message: Any, emotion: Any, intent: Any, user_id: str) -> None: ...
+        async def _cognition(
+            self,
+            content: str,
+            user_id: str,
+            group_id: str,
+            *,
+            sender_type: str = "human",
+            multimodal_inputs: list[dict[str, str]] | None = None,
+            caller_is_developer: bool = False,
+        ) -> tuple[Any, Any, list[Any], Any]: ...
+        def _decision(
+            self, intent: Any, emotion: Any, group_id: str, user_id: str, sender_type: str = "human"
+        ) -> Any: ...
+        async def _execution(
+            self,
+            decision: Any,
+            message: Any,
+            intent: Any,
+            emotion: Any,
+            memories: list[Any],
+            group_id: str,
+            empathy: Any,
+            user_id: str,
+        ) -> dict[str, Any]: ...
+        def _background_update(
+            self, group_id: str, message: Any, emotion: Any, intent: Any, user_id: str
+        ) -> None: ...
         def _get_recent_messages(self, group_id: str, n: int = 10) -> list[dict[str, Any]]: ...
         def _get_tone_alignment(self, group_id: str) -> str: ...
         @staticmethod
         def _strip_conversation_history_xml(text: str) -> str: ...
         @staticmethod
         def _is_pure_image_message(content: str) -> bool: ...
-        def _record_subtask_tokens(self, task_name: str, model_name: str, group_id: str, request: Any | None = None, duration_ms: float = 0.0, token_breakdown: dict[str, int] | None = None) -> None: ...
+        def _record_subtask_tokens(
+            self,
+            task_name: str,
+            model_name: str,
+            group_id: str,
+            request: Any | None = None,
+            duration_ms: float = 0.0,
+            token_breakdown: dict[str, int] | None = None,
+        ) -> None: ...
         def _classify_exception(self, exc: Exception) -> str: ...
-        def _enhance_topic_relevance(self, base_score: float, message: str, group_id: str, user_id: str) -> float: ...
+        def _enhance_topic_relevance(
+            self, base_score: float, message: str, group_id: str, user_id: str
+        ) -> float: ...
         @staticmethod
         def _message_rate_per_minute(recent_msgs: list[dict[str, Any]]) -> float: ...
         @staticmethod
-        def _inject_multimodal_into_user_message(messages: list[dict[str, Any]], multimodal_inputs: list[dict[str, str]] | None) -> list[dict[str, Any]]: ...
+        def _inject_multimodal_into_user_message(
+            messages: list[dict[str, Any]], multimodal_inputs: list[dict[str, str]] | None
+        ) -> list[dict[str, Any]]: ...
         async def _analyze_user_profile_async(self, user_id: str, group_id: str) -> None: ...
         def _register_passive_skills(self) -> None: ...
         def _wrap_event_bus_for_triggers(self) -> None: ...
@@ -94,7 +130,9 @@ class _EmotionalGroupChatEngineBase:
         expr_cfg = self.config.get("expressiveness", {})
         if isinstance(expr_cfg, (int, float)):
             expr_cfg = {"expressiveness": float(expr_cfg)}
-        self.expressiveness = ExpressivenessConfig.from_dict(expr_cfg if isinstance(expr_cfg, dict) else {})
+        self.expressiveness = ExpressivenessConfig.from_dict(
+            expr_cfg if isinstance(expr_cfg, dict) else {}
+        )
 
         # Persona loading
         from sirius_chat.core.persona_generator import PersonaGenerator
@@ -257,15 +295,14 @@ class _EmotionalGroupChatEngineBase:
         # Cognition event tracking
         from sirius_chat.memory.cognition_store import CognitionEventStore
 
-        self.cognition_store = CognitionEventStore(
-            Path(work_path) / "cognition_events.db"
-        )
+        self.cognition_store = CognitionEventStore(Path(work_path) / "cognition_events.db")
 
         # SKILL system
         self._skill_registry: Any | None = None
         self._skill_executor: Any | None = None
         self._passive_skill_tasks: dict[str, asyncio.Task] = {}
         self._passive_skill_triggers: dict[str, list[Any]] = {}
+        self._passive_skill_unloaders: list[tuple[Any, Any]] = []
 
         # Plugin system（v1.2+）
         self._plugin_registry: Any | None = None
@@ -363,7 +400,9 @@ class _EmotionalGroupChatEngineBase:
             label = "动画表情" if has_sticker else "图片"
             self._log_inner_thought(f"{speaker} 发了一张{label}，我先默默记下来～")
             intent, emotion, memories, empathy = await self._cognition(
-                content, user_id, group_id,
+                content,
+                user_id,
+                group_id,
                 sender_type=message.sender_type,
                 multimodal_inputs=message.multimodal_inputs,
                 caller_is_developer=caller_is_developer,
@@ -387,7 +426,9 @@ class _EmotionalGroupChatEngineBase:
 
         # 2. Cognition (unified emotion + intent)
         intent, emotion, memories, empathy = await self._cognition(
-            content, user_id, group_id,
+            content,
+            user_id,
+            group_id,
             sender_type=message.sender_type,
             multimodal_inputs=message.multimodal_inputs,
             caller_is_developer=caller_is_developer,
@@ -527,7 +568,9 @@ class _EmotionalGroupChatEngineBase:
             return True
         # 同时提到自己和其他 AI -> 检查谁是第一个被提到的
         # 如果自己不是第一个被提到的 -> 抑制（让第一个被提到的 AI 主导回复）
-        all_names = [(n, "me") for n in my_names if n] + [(n.lower(), "other") for n in other_names if n]
+        all_names = [(n, "me") for n in my_names if n] + [
+            (n.lower(), "other") for n in other_names if n
+        ]
         first_pos = len(text)
         first_who = None
         for name, who in all_names:
@@ -537,9 +580,7 @@ class _EmotionalGroupChatEngineBase:
                 first_who = who
         return first_who == "other"
 
-    def _log_inner_thought(
-        self, thought: str, intensity: float = 0.5
-    ) -> None:
+    def _log_inner_thought(self, thought: str, intensity: float = 0.5) -> None:
         """Log an inner thought for observability."""
         logger.info("[内心] %s", thought)
 
@@ -556,11 +597,13 @@ class _EmotionalGroupChatEngineBase:
         )
         self._log_inner_thought(thought)
 
-    def _log_decision_thought(
-        self, intent: IntentAnalysisV3, decision: StrategyDecision
-    ) -> None:
+    def _log_decision_thought(self, intent: IntentAnalysisV3, decision: StrategyDecision) -> None:
         """Log decision-phase inner thought."""
-        strategy = decision.strategy.value if hasattr(decision.strategy, "value") else str(decision.strategy)
+        strategy = (
+            decision.strategy.value
+            if hasattr(decision.strategy, "value")
+            else str(decision.strategy)
+        )
         thought = (
             f"决策结果: {strategy}，"
             f"score={getattr(decision, 'score', 0):.2f}，"
@@ -766,7 +809,9 @@ class _EmotionalGroupChatEngineBase:
                 token_callback=self._record_sticker_subtask_tokens,
                 embedding_client=self._embedding_client,
             )
-            logger.info("表情包系统初始化完成: %s", self.persona.name if self.persona else "default")
+            logger.info(
+                "表情包系统初始化完成: %s", self.persona.name if self.persona else "default"
+            )
 
             # Generate preference from persona if not exists
             pref_manager = self._sticker_system.get("preference_manager")
@@ -884,9 +929,7 @@ class _EmotionalGroupChatEngineBase:
         now_ts = time.time()
         last_reply_ts = self._last_reply_at.get(group_id, 0)
         conversation_depth = (
-            self._last_reply_depth.get(group_id, 0) + 1
-            if now_ts - last_reply_ts < 60
-            else 1
+            self._last_reply_depth.get(group_id, 0) + 1 if now_ts - last_reply_ts < 60 else 1
         )
         self._last_reply_depth[group_id] = conversation_depth
 
@@ -911,7 +954,8 @@ class _EmotionalGroupChatEngineBase:
 
         persona_name = self.persona.name if self.persona else ""
         provider_name = getattr(
-            self.provider_async, "_last_provider_name",
+            self.provider_async,
+            "_last_provider_name",
             getattr(self.provider_async, "_provider_name", "unknown"),
         )
 
@@ -922,9 +966,7 @@ class _EmotionalGroupChatEngineBase:
 
             bd = PromptTokenBreakdown(**token_breakdown)
             bd.system_prompt_total = estimate_tokens(system_prompt)
-            bd.user_message = sum(
-                estimate_tokens(str(m.get("content", ""))) for m in messages
-            )
+            bd.user_message = sum(estimate_tokens(str(m.get("content", ""))) for m in messages)
             bd.output_total = completion_tokens
             bd.total = bd.system_prompt_total + bd.user_message + bd.output_total
             breakdown_json = bd.to_json()
@@ -936,8 +978,7 @@ class _EmotionalGroupChatEngineBase:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
-            input_chars=len(system_prompt)
-            + sum(len(str(m.get("content", ""))) for m in messages),
+            input_chars=len(system_prompt) + sum(len(str(m.get("content", ""))) for m in messages),
             output_chars=output_chars,
             estimation_method=estimation_method,
             retries_used=0,
@@ -1032,6 +1073,7 @@ class _EmotionalGroupChatEngineBase:
 
         # Cap at 70% to avoid overuse
         import random
+
         return random.random() < min(base_prob, 0.70)
 
     def _emotion_to_sticker_hint(self, emotion: EmotionState) -> str:
@@ -1112,12 +1154,13 @@ class _EmotionalGroupChatEngineBase:
             return {"success": False, "error": "no matching sticker found"}
 
         from pathlib import Path
+
         file_path = Path(record.file_path)
         if not file_path.exists():
             return {"success": False, "error": f"sticker file not found: {record.file_path}"}
 
         # 直接使用引擎持有的 adapter
-        adapter = getattr(self, '_adapter', None)
+        adapter = getattr(self, "_adapter", None)
         if adapter is None:
             return {"success": False, "error": "no adapter available"}
 
@@ -1135,7 +1178,9 @@ class _EmotionalGroupChatEngineBase:
             if feedback_observer is not None:
                 sent_at = datetime.now(timezone.utc).isoformat()
                 asyncio.create_task(
-                    feedback_observer.observe(record.sticker_id, group_id, sent_at, wait_seconds=15.0)
+                    feedback_observer.observe(
+                        record.sticker_id, group_id, sent_at, wait_seconds=15.0
+                    )
                 )
 
             # Persist sticker send into basic memory so the model knows it sent one
@@ -1146,11 +1191,13 @@ class _EmotionalGroupChatEngineBase:
                     role="assistant",
                     content=PromptFactory.render_sticker_reference(),
                     speaker_name=self.persona.name if self.persona else "assistant",
-                    multimodal_inputs=[{
-                        "type": "image",
-                        "sub_type": "1",
-                        "caption": record.caption or "动画表情",
-                    }],
+                    multimodal_inputs=[
+                        {
+                            "type": "image",
+                            "sub_type": "1",
+                            "caption": record.caption or "动画表情",
+                        }
+                    ],
                 )
 
             return {

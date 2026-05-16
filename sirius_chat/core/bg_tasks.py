@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from sirius_chat.core.engine_core import _EmotionalGroupChatEngineBase
 
     class _Base(_EmotionalGroupChatEngineBase): ...
+
 else:
     _Base = object
 
@@ -54,11 +55,22 @@ class BackgroundTasksMixin(_Base):
             t.add_done_callback(self._bg_tasks.discard)
 
     def stop_background_tasks(self) -> None:
-        """Cancel all background tasks."""
+        """Cancel all background tasks and run passive SKILL unload hooks."""
         self._bg_running = False
         for t in list(self._bg_tasks):
             t.cancel()
         self._bg_tasks.clear()
+
+        # 执行被动 SKILL on_unload 钩子（通过 ensure_future 调度，快速清理资源）
+        for ctx, factory in getattr(self, "_passive_skill_unloaders", []):
+            try:
+                coro = factory(ctx)
+                if coro is not None and asyncio.iscoroutine(coro):
+                    asyncio.ensure_future(coro)
+            except Exception as exc:
+                logger.warning("被动SKILL on_unload 失败: %s", exc)
+        if hasattr(self, "_passive_skill_unloaders"):
+            self._passive_skill_unloaders.clear()
 
     async def _bg_delayed_queue_ticker(self) -> None:
         """Smart-sleep ticker for the delayed queue.
@@ -233,10 +245,10 @@ class BackgroundTasksMixin(_Base):
 
     async def _run_diary_consolidation(self) -> None:
         """Find similar diary entries and merge them via LLM."""
+        import time
+
         from sirius_chat.memory.diary.consolidator import DiaryConsolidator
         from sirius_chat.providers.base import GenerationRequest
-
-        import time
 
         consolidator = DiaryConsolidator(self.diary_manager, self.config)
         cfg = self.model_router.resolve("memory_extract")
@@ -367,7 +379,10 @@ class BackgroundTasksMixin(_Base):
                 token_breakdown[key] = token_breakdown.get(key, 0) + val
 
         raw_reply = await self._generate(
-            system_prompt, messages, group_id, style,
+            system_prompt,
+            messages,
+            group_id,
+            style,
             token_breakdown=token_breakdown,
         )
         reply = raw_reply.strip()
@@ -516,7 +531,10 @@ class BackgroundTasksMixin(_Base):
         sub_bd.total = estimate_tokens(system_prompt)
 
         raw_reply = await self._generate(
-            system_prompt, messages, group_id, style,
+            system_prompt,
+            messages,
+            group_id,
+            style,
             token_breakdown=sub_bd.to_dict(),
         )
         reply = raw_reply.strip()
@@ -687,7 +705,11 @@ class BackgroundTasksMixin(_Base):
                 "tick_delayed_queue: triggered[0] is dict (item_id=%s), converting to DelayedResponseItem",
                 item.get("item_id", "unknown"),
             )
-            from sirius_chat.models.response_strategy import DelayedResponseItem, StrategyDecision, ResponseStrategy
+            from sirius_chat.models.response_strategy import (
+                DelayedResponseItem,
+                ResponseStrategy,
+                StrategyDecision,
+            )
 
             sd_raw = item.get("strategy_decision", {}) or {}
             try:
@@ -810,7 +832,9 @@ class BackgroundTasksMixin(_Base):
 
         for _round in range(max_skill_rounds + 1):
             raw_reply = await self._generate(
-                system_prompt, messages, group_id,
+                system_prompt,
+                messages,
+                group_id,
                 token_breakdown=token_breakdown,
             )
             reply = raw_reply.strip()
@@ -859,7 +883,9 @@ class BackgroundTasksMixin(_Base):
                     developer_profiles.append(profile)
 
             if self._skill_executor is not None:
-                self._skill_executor.set_chat_context(group_id=group_id, user_id=caller_user_id or "")
+                self._skill_executor.set_chat_context(
+                    group_id=group_id, user_id=caller_user_id or ""
+                )
 
             for idx, (skill_name, params) in enumerate(calls):
                 skill = self._skill_registry.get(skill_name)
@@ -867,21 +893,31 @@ class BackgroundTasksMixin(_Base):
                     err = f"SKILL '{skill_name}' 未找到"
                     logger.warning(err)
                     if not all_silent:
-                        skill_results.append(PromptFactory.build_skill_status_message("未找到", skill_name))
+                        skill_results.append(
+                            PromptFactory.build_skill_status_message("未找到", skill_name)
+                        )
                     continue
                 # Engagement-based permission: low-engagement non-developers cannot invoke skills
                 if caller_engagement < 0.1 and not caller_is_developer:
                     err = f"SKILL '{skill_name}' 被拒绝：互动不足 (engagement={caller_engagement:.2f})"
                     logger.warning(err)
                     if not all_silent:
-                        skill_results.append(PromptFactory.build_skill_status_message("拒绝", skill_name, "你还不够熟，这个技能暂不可用"))
+                        skill_results.append(
+                            PromptFactory.build_skill_status_message(
+                                "拒绝", skill_name, "你还不够熟，这个技能暂不可用"
+                            )
+                        )
                     continue
 
                 if skill.developer_only and not caller_is_developer:
                     err = f"SKILL '{skill_name}' 被拒绝：caller 不是 developer"
                     logger.warning(err)
                     if not all_silent:
-                        skill_results.append(PromptFactory.build_skill_status_message("拒绝", skill_name, "该技能仅 developer 可用"))
+                        skill_results.append(
+                            PromptFactory.build_skill_status_message(
+                                "拒绝", skill_name, "该技能仅 developer 可用"
+                            )
+                        )
                     continue
                 ctx = SkillInvocationContext(
                     caller=skill_caller,
@@ -906,7 +942,9 @@ class BackgroundTasksMixin(_Base):
                     if result.success:
                         if not skill.silent:
                             skill_results.append(
-                                PromptFactory.build_skill_status_message("结果", skill_name, result.to_display_text())
+                                PromptFactory.build_skill_status_message(
+                                    "结果", skill_name, result.to_display_text()
+                                )
                             )
                             for block in result.multimodal_blocks:
                                 skill_multimodal.append(
@@ -936,11 +974,15 @@ class BackgroundTasksMixin(_Base):
                         err = result.error or "未知错误"
                         logger.warning("SKILL '%s' 执行失败: %s", skill_name, err)
                         if not skill.silent:
-                            skill_results.append(PromptFactory.build_skill_status_message("失败", skill_name, err))
+                            skill_results.append(
+                                PromptFactory.build_skill_status_message("失败", skill_name, err)
+                            )
                 except Exception as exc:
                     logger.error("SKILL '%s' 执行异常: %s", skill_name, exc)
                     if not skill.silent:
-                        skill_results.append(PromptFactory.build_skill_status_message("异常", skill_name, str(exc)))
+                        skill_results.append(
+                            PromptFactory.build_skill_status_message("异常", skill_name, str(exc))
+                        )
 
                 # 链式调用中间增加延迟，避免回复过快
                 if idx < len(calls) - 1:
@@ -964,8 +1006,8 @@ class BackgroundTasksMixin(_Base):
                 "形成链式调用。",
                 "重要：如果你说要去搜索、查找、读取或执行任何操作，",
                 "必须在同一句回复中紧跟对应的 [SKILL_CALL: ...] 标记，绝对不能只说不动。",
-                "错误示例（只说不动）：\"我再去搜索一下\" ❌",
-                "正确示例（边说边做）：\"我再去搜索一下 [SKILL_CALL: bing_search | {\\\"query\\\": \\\"xxx\\\"}]\" ✅",
+                '错误示例（只说不动）："我再去搜索一下" ❌',
+                '正确示例（边说边做）："我再去搜索一下 [SKILL_CALL: bing_search | {\\"query\\": \\"xxx\\"}]" ✅',
                 "重要：你的每次回复都必须包含自然语言内容，",
                 "不能把 SKILL_CALL 标记作为回复的唯一内容。",
             ]
@@ -1009,7 +1051,9 @@ class BackgroundTasksMixin(_Base):
                     group_id=group_id,
                     user_id="skill_system",
                     role="system",
-                    content=PromptFactory.build_memory_skill_result(_raw, _MEMORY_SKILL_RESULT_CHAR_LIMIT),
+                    content=PromptFactory.build_memory_skill_result(
+                        _raw, _MEMORY_SKILL_RESULT_CHAR_LIMIT
+                    ),
                 )
 
         # If the loop ended because max rounds were exhausted and the last round
@@ -1228,7 +1272,9 @@ class BackgroundTasksMixin(_Base):
         pool = unique[:3] if len(unique) >= 3 else unique
         return random.choice(pool)
 
-    def _build_proactive_prompt(self, trigger: dict[str, Any], group_id: str, adapter_type: str | None = None):
+    def _build_proactive_prompt(
+        self, trigger: dict[str, Any], group_id: str, adapter_type: str | None = None
+    ):
         """构建主动发起的 PromptBundle。"""
         glossary = self.glossary_manager.build_prompt_section(
             group_id, text=trigger.get("trigger_type", ""), max_terms=3
@@ -1245,5 +1291,3 @@ class BackgroundTasksMixin(_Base):
             topic_context=topic,
             adapter_type=adapter_type,
         )
-
-

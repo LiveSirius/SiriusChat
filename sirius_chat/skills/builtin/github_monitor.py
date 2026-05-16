@@ -1,16 +1,23 @@
 """GitHub 仓库活动监控被动 SKILL。
 
-通过后台任务周期性轮询指定 GitHub 仓库的事件（Issues、PR、Release、Commit、Comment 等），
-检测到新活动后使用 Playwright 截取对应页面截图，并生成人格风格的通知消息。
+通过后台任务周期性轮询或 Webhook 实时推送两种模式监控指定 GitHub 仓库的事件
+（Issues、PR、Release、Commit、Comment 等），检测到新活动后使用 Playwright 截取对应
+页面截图，并生成人格风格的通知消息。
+
+每个仓库可独立选择模式（poll 或 webhook），同一 SKILL 实例同时支持两种模式。
 
 配置由 WebUI 写入 data_store（skill_data/github_monitor.json）：
 {
     "api_base_url": "https://api.github.com",
     "poll_seconds": 120,
+    "webhook_secret": "",
+    "webhook_host": "127.0.0.1",
+    "webhook_port": 0,
     "repos": [
         {
             "owner": "Sparrived",
             "repo": "SiriusChat",
+            "mode": "poll",
             "events": ["issues", "pulls", "releases", "comments", "pushes"],
             "groups": ["gid_xxx"],
             "github_token": ""
@@ -32,16 +39,19 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from sirius_chat.github_webhook import GitHubWebhookServer
+
 logger = logging.getLogger(__name__)
 
 SKILL_META = {
     "name": "github_monitor",
     "description": (
         "监控指定 GitHub 仓库的活动（Issues/PR/Release/Comment/Push），"
+        "支持 poll 轮询和 webhook 推送两种模式，"
         "检测到新事件时自动截取页面截图并生成人格风格的通知消息。"
         "配置通过 WebUI 管理，无需 AI 主动调用。"
     ),
-    "version": "1.0.0",
+    "version": "1.1.0",
     "tags": ["github", "monitor", "notification"],
     "developer_only": False,
     "dependencies": ["playwright", "httpx"],
@@ -54,6 +64,10 @@ _MAX_EVENTS_PER_PAGE = 30
 _MAX_COMMITS_IN_BODY = 5
 _MAX_API_RETRIES = 3
 _MAX_SCREENSHOT_RETRIES = 3
+
+# Webhook 模式运行时状态（模块级，由 on_load/on_unload 管理）
+_webhook_server: GitHubWebhookServer | None = None
+_webhook_ctx: Any = None
 
 # PR 合并提交的消息模式（GitHub 自动生成）
 _PR_MERGE_COMMIT_PATTERN = re.compile(r"^Merge pull request #\d+ from ")
@@ -116,6 +130,65 @@ def create_background_tasks(ctx: Any) -> list[Any]:
     ]
 
 
+async def create_on_load(ctx: Any) -> None:
+    """启动 GitHub Webhook 服务器（如有仓库配置为 webhook 模式）。
+
+    该函数由引擎在 SKILL 加载时通过 asyncio.create_task 调度执行。
+    仅当配置中至少存在一个 mode="webhook" 的仓库时才启动服务器。
+    """
+    global _webhook_server, _webhook_ctx
+    store = ctx.get_data_store("github_monitor")
+    store.reload()
+    repos: list[dict[str, Any]] = list(store.get("repos", []))
+
+    # 筛选 webhook 模式的仓库
+    webhook_repos = [r for r in repos if r.get("mode") == "webhook"]
+    if not webhook_repos:
+        logger.debug("github_monitor: 无 webhook 模式仓库，不启动 Webhook 服务器")
+        return
+
+    _webhook_ctx = ctx
+    secret = str(store.get("webhook_secret", ""))
+    port = int(store.get("webhook_port", 0))
+    host = str(store.get("webhook_host", "127.0.0.1"))
+
+    _webhook_server = GitHubWebhookServer(secret=secret, host=host, port=port)
+
+    # 仓库过滤器：仅处理 webhook 模式的仓库
+    webhook_repo_names = {f"{r['owner']}/{r['repo']}" for r in webhook_repos}
+    _webhook_server.set_repo_filter(lambda r: r in webhook_repo_names)
+
+    # 注册所有关注的事件类型处理器（统一入口）
+    _webhook_server.add_handler("issues", _handle_webhook_event)
+    _webhook_server.add_handler("pull_request", _handle_webhook_event)
+    _webhook_server.add_handler("push", _handle_webhook_event)
+    _webhook_server.add_handler("release", _handle_webhook_event)
+    _webhook_server.add_handler("issue_comment", _handle_webhook_event)
+    _webhook_server.add_handler("pull_request_review_comment", _handle_webhook_event)
+
+    actual_port = await _webhook_server.start()
+    store.set("_webhook_port", actual_port)
+    store.save()
+    logger.info(
+        "github_monitor: Webhook 模式已启动，端口 %s，监控 %d 个仓库",
+        actual_port,
+        len(webhook_repos),
+    )
+
+
+async def create_on_unload(ctx: Any) -> None:
+    """停止 GitHub Webhook 服务器。
+
+    该函数由引擎在 SKILL 卸载时通过 asyncio.ensure_future 调度执行。
+    """
+    global _webhook_server, _webhook_ctx
+    if _webhook_server is not None:
+        await _webhook_server.stop()
+        _webhook_server = None
+        _webhook_ctx = None
+        logger.info("github_monitor: Webhook 模式已停止")
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 主轮询逻辑
 # ═══════════════════════════════════════════════════════════════════════
@@ -158,6 +231,10 @@ async def _poll_github_events(ctx: Any) -> None:
         timeout=httpx.Timeout(30.0),
     ) as client:
         for repo_cfg in repos:
+            # 跳过 webhook 模式的仓库（由 Webhook 服务器实时推送处理）
+            if repo_cfg.get("mode") == "webhook":
+                continue
+
             owner = str(repo_cfg.get("owner", "")).strip()
             repo = str(repo_cfg.get("repo", "")).strip()
             if not owner or not repo:
@@ -199,13 +276,17 @@ async def _poll_github_events(ctx: Any) -> None:
                     if attempt < _MAX_API_RETRIES:
                         logger.warning(
                             "github_monitor: %s 拉取 %s 失败，%.1fs 后重试",
-                            last_error, repo_key, 2.0 * attempt,
+                            last_error,
+                            repo_key,
+                            2.0 * attempt,
                         )
                         await asyncio.sleep(2.0 * attempt)
                     else:
                         logger.warning(
                             "github_monitor: 拉取 %s 事件失败（共 %d 次）",
-                            repo_key, _MAX_API_RETRIES, exc_info=True,
+                            repo_key,
+                            _MAX_API_RETRIES,
+                            exc_info=True,
                         )
             if last_error and not events:
                 continue
@@ -236,7 +317,8 @@ async def _poll_github_events(ctx: Any) -> None:
             if skipped_pr_merges:
                 logger.debug(
                     "github_monitor: %s 跳过了 %d 条 PR 合并 Push 事件（与 PullRequestEvent 重复）",
-                    repo_key, skipped_pr_merges,
+                    repo_key,
+                    skipped_pr_merges,
                 )
 
             if not new_events:
@@ -263,7 +345,8 @@ async def _poll_github_events(ctx: Any) -> None:
                 store.save()
                 logger.info(
                     "github_monitor: %s 首次同步完成，已跳过 %d 条历史事件",
-                    repo_key, len(new_events),
+                    repo_key,
+                    len(new_events),
                 )
                 continue
 
@@ -278,7 +361,9 @@ async def _poll_github_events(ctx: Any) -> None:
 
             logger.info(
                 "github_monitor: %s 发现 %d 条新事件，合并为 %d 组",
-                repo_key, len(new_events), len(grouped),
+                repo_key,
+                len(new_events),
+                len(grouped),
             )
 
             for canonical_url, group in grouped.items():
@@ -286,7 +371,11 @@ async def _poll_github_events(ctx: Any) -> None:
 
                 # 截图：PR 事件截 /files diff 页，Push 截 compare 页，其余截主页面
                 screenshot_path: str | None = None
-                screenshot_url = merged_info.get("screenshot_url", "") or merged_info.get("url", "") or canonical_url
+                screenshot_url = (
+                    merged_info.get("screenshot_url", "")
+                    or merged_info.get("url", "")
+                    or canonical_url
+                )
                 if screenshot_url:
                     try:
                         screenshot_path = await _take_screenshot(screenshot_url, store)
@@ -294,9 +383,7 @@ async def _poll_github_events(ctx: Any) -> None:
                         logger.warning("github_monitor: 截图失败 (%s): %s", screenshot_url, exc)
 
                 # LLM 生成：每个合并组仅调用一次
-                notification = await _generate_notification_text(
-                    ctx, merged_info, screenshot_path
-                )
+                notification = await _generate_notification_text(ctx, merged_info, screenshot_path)
 
                 if not notification:
                     continue
@@ -319,7 +406,9 @@ async def _poll_github_events(ctx: Any) -> None:
                     except Exception as exc:
                         logger.warning(
                             "github_monitor: 分发 %s 失败 (gid=%s): %s",
-                            repo_key, gid, exc,
+                            repo_key,
+                            gid,
+                            exc,
                         )
 
             # 本轮 API 调用完成，保存调用时间戳
@@ -344,9 +433,7 @@ def _is_pr_merge_push_event(event: dict[str, Any]) -> bool:
     commits: list[dict[str, Any]] = (event.get("payload", {}) or {}).get("commits", [])
     if not commits:
         return False
-    return all(
-        _PR_MERGE_COMMIT_PATTERN.match(c.get("message", "")) for c in commits
-    )
+    return all(_PR_MERGE_COMMIT_PATTERN.match(c.get("message", "")) for c in commits)
 
 
 async def _fetch_repo_events(
@@ -368,7 +455,9 @@ async def _fetch_repo_events(
     if resp.status_code in (403, 429):
         logger.warning(
             "github_monitor: %s/%s API %d（可能触发速率限制）",
-            owner, repo, resp.status_code,
+            owner,
+            repo,
+            resp.status_code,
         )
         return []
 
@@ -377,7 +466,9 @@ async def _fetch_repo_events(
     events_list = data if isinstance(data, list) else []
     logger.debug(
         "github_monitor: %s/%s API 200, 获取到 %d 条事件",
-        owner, repo, len(events_list),
+        owner,
+        repo,
+        len(events_list),
     )
     return events_list
 
@@ -462,7 +553,9 @@ def _extract_event_info(event: dict[str, Any]) -> dict[str, Any]:
         elif etype == "PullRequestReviewCommentEvent":
             pr_data = payload.get("pull_request", {})
             title = pr_data.get("title", "") if pr_data else ""
-            canonical_url = _clean_canonical_url(pr_data.get("html_url", html_url) if pr_data else html_url)
+            canonical_url = _clean_canonical_url(
+                pr_data.get("html_url", html_url) if pr_data else html_url
+            )
         else:
             # CommitCommentEvent：规范 URL 为 commit 页面
             canonical_url = _clean_canonical_url(html_url)
@@ -568,7 +661,11 @@ def _merge_event_group(events: list[dict[str, Any]]) -> dict[str, Any]:
     bodies = [e.get("body", "") for e in events if e.get("body", "")]
     merged_body = "\n---\n".join(bodies) if bodies else primary.get("body", "")
 
-    primary["actor"] = "、".join(actors) if len(actors) > 1 else (actors[0] if actors else primary.get("actor", ""))
+    primary["actor"] = (
+        "、".join(actors)
+        if len(actors) > 1
+        else (actors[0] if actors else primary.get("actor", ""))
+    )
     primary["merged_actions"] = merged_actions
     primary["merged_count"] = len(events)
     primary["body"] = merged_body
@@ -658,7 +755,10 @@ async def _take_screenshot(url: str, store: Any) -> str | None:
                         if attempt < _MAX_SCREENSHOT_RETRIES:
                             logger.debug(
                                 "github_monitor: full_page 截图第 %d 次失败，%.1fs 后重试 (%s): %s",
-                                attempt, 2.0 * attempt, url, exc,
+                                attempt,
+                                2.0 * attempt,
+                                url,
+                                exc,
                             )
                             await asyncio.sleep(2.0 * attempt)
                 if last_error is not None:
@@ -811,3 +911,265 @@ def _build_fallback_notification(event_info: dict[str, Any]) -> str:
     if url:
         parts.append(f"🔗 {url}")
     return " ".join(parts)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Webhook 模式事件处理
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# 仅对通知有价值的 webhook 动作
+_WEBHOOK_ISSUE_ACTIONS = {"opened", "closed", "reopened"}
+_WEBHOOK_PR_ACTIONS = {"opened", "closed", "reopened", "synchronize"}
+_WEBHOOK_COMMENT_ACTIONS = {"created"}
+
+
+async def _handle_webhook_event(event_type: str, body: dict[str, Any]) -> None:
+    """Webhook 事件统一处理入口。
+
+    负责将 webhook 请求体转换为内部 event_info 格式，
+    然后复用已有的截图 → 通知生成 → 分发流水线。
+    """
+    if _webhook_ctx is None:
+        return
+
+    ctx = _webhook_ctx
+    store = ctx.get_data_store("github_monitor")
+
+    # 提取事件信息
+    event_info = _extract_webhook_event_info(event_type, body)
+    if event_info is None:
+        return
+
+    repo_name = event_info["repo"]
+
+    # 查找该仓库的 target_groups
+    repos: list[dict[str, Any]] = list(store.get("repos", []))
+    target_groups: list[str] = []
+    repo_mode = "poll"
+    for r in repos:
+        if f"{r.get('owner', '')}/{r.get('repo', '')}" == repo_name:
+            target_groups = r.get("groups", [])
+            repo_mode = r.get("mode", "poll")
+            break
+
+    if not target_groups:
+        return
+
+    # 二次校验：仅处理 webhook 模式的仓库（防止配置变更后仍收到旧仓库的事件）
+    if repo_mode != "webhook":
+        logger.debug("github_monitor (webhook): 仓库 %s 已非 webhook 模式，忽略", repo_name)
+        return
+
+    # 截图
+    screenshot_path: str | None = None
+    screenshot_url = event_info.get("screenshot_url", "") or event_info.get("url", "")
+    if screenshot_url:
+        try:
+            screenshot_path = await _take_screenshot(screenshot_url, store)
+        except Exception as exc:
+            logger.warning("github_monitor (webhook): 截图失败 (%s): %s", screenshot_url, exc)
+
+    # LLM 生成通知
+    notification = await _generate_notification_text(ctx, event_info, screenshot_path)
+    if not notification:
+        return
+
+    ctx.log_inner_thought(
+        f"github_monitor (webhook): [{event_info['repo']}] {event_info['actor']} "
+        f"{event_info.get('action_cn', '')}{event_info.get('type_desc', '')}"
+        f" - 通知已生成，分发到 {len(target_groups)} 个群"
+    )
+
+    # 分发给所有订阅群
+    for gid in target_groups:
+        active_groups = ctx.get_active_groups()
+        if gid not in active_groups and not gid.startswith("private_"):
+            continue
+        try:
+            await _dispatch_notification(ctx, gid, notification, screenshot_path)
+        except Exception as exc:
+            logger.warning(
+                "github_monitor (webhook): 分发失败 (gid=%s): %s",
+                gid,
+                exc,
+            )
+
+
+def _extract_webhook_event_info(
+    event_type: str,
+    body: dict[str, Any],
+) -> dict[str, Any] | None:
+    """从 Webhook 请求体中提取结构化事件信息。
+
+    与 _extract_event_info（Events API 格式）对应，但处理的是 Webhook payload。
+    返回格式与 _extract_event_info 兼容，可直接喂给通知生成流水线。
+
+    Returns None 表示该事件不需要处理（如非关注的 action）。
+    """
+    repo_name = body.get("repository", {}).get("full_name", "未知仓库")
+    sender = body.get("sender", {})
+    actor_name = sender.get("login", "未知用户")
+
+    if event_type == "issues":
+        action = body.get("action", "")
+        if action not in _WEBHOOK_ISSUE_ACTIONS:
+            return None
+        issue = body.get("issue", {})
+        title = issue.get("title", "")
+        body_text = _truncate_text(issue.get("body") or "")
+        html_url = issue.get("html_url", "")
+        return {
+            "repo": repo_name,
+            "type_desc": "Issue",
+            "actor": actor_name,
+            "action": action,
+            "action_cn": _ACTION_DESC.get(action, action),
+            "title": title,
+            "body": body_text,
+            "url": html_url,
+            "screenshot_url": html_url,
+            "canonical_url": _clean_canonical_url(html_url),
+        }
+
+    if event_type == "pull_request":
+        action = body.get("action", "")
+        if action not in _WEBHOOK_PR_ACTIONS:
+            return None
+        pr_data = body.get("pull_request", {})
+        title = pr_data.get("title", "")
+        body_text = _truncate_text(pr_data.get("body") or "")
+        html_url = pr_data.get("html_url", "")
+        action_cn = _ACTION_DESC.get(action, action)
+        # 检测合并动作
+        if pr_data.get("merged") and action == "closed":
+            action_cn = "合并了"
+        return {
+            "repo": repo_name,
+            "type_desc": "Pull Request",
+            "actor": actor_name,
+            "action": action,
+            "action_cn": action_cn,
+            "title": title,
+            "body": body_text,
+            "url": html_url,
+            "screenshot_url": html_url + "/files" if html_url else "",
+            "canonical_url": _clean_canonical_url(html_url),
+        }
+
+    if event_type == "push":
+        # 跳过 PR 合并导致的 push（会与 pull_request (merged) 事件重复）
+        commits: list[dict[str, Any]] = body.get("commits", [])
+        if commits and all(_PR_MERGE_COMMIT_PATTERN.match(c.get("message", "")) for c in commits):
+            logger.debug("github_monitor (webhook): 跳过 PR 合并 Push 事件")
+            return None
+
+        ref = body.get("ref", "")
+        branch = ref.replace("refs/heads/", "") if ref.startswith("refs/heads/") else ref
+        title = f"{len(commits)} 个提交 → {branch}"
+        commit_lines: list[str] = []
+        for c in commits[:_MAX_COMMITS_IN_BODY]:
+            msg_first_line = (c.get("message", "")).split("\n")[0][:100]
+            commit_lines.append(f"- {msg_first_line}")
+        body_text = "\n".join(commit_lines)
+        before_sha = body.get("before", "")
+        head_sha = body.get("after", "")
+        if before_sha and head_sha and before_sha != "0000000000000000000000000000000000000000":
+            compare_url = f"https://github.com/{repo_name}/compare/{before_sha}...{head_sha}"
+        else:
+            compare_url = ""
+        if compare_url:
+            html_url = compare_url
+        elif commits:
+            html_url = f"https://github.com/{repo_name}/commit/{commits[0]['sha']}"
+        else:
+            html_url = f"https://github.com/{repo_name}"
+        screenshot_url = compare_url or html_url
+        return {
+            "repo": repo_name,
+            "type_desc": "推送",
+            "actor": actor_name,
+            "action": "",
+            "action_cn": "推送了",
+            "title": title,
+            "body": body_text,
+            "url": html_url,
+            "screenshot_url": screenshot_url,
+            "canonical_url": _clean_canonical_url(html_url),
+        }
+
+    if event_type == "release":
+        action = body.get("action", "")
+        if action != "published":
+            return None
+        release = body.get("release", {})
+        title = release.get("name") or release.get("tag_name", "")
+        body_text = _truncate_text(release.get("body") or "")
+        html_url = release.get("html_url", "")
+        return {
+            "repo": repo_name,
+            "type_desc": "Release",
+            "actor": actor_name,
+            "action": action,
+            "action_cn": "发布了",
+            "title": title,
+            "body": body_text,
+            "url": html_url,
+            "screenshot_url": html_url,
+            "canonical_url": _clean_canonical_url(html_url),
+        }
+
+    if event_type == "issue_comment":
+        action = body.get("action", "")
+        if action not in _WEBHOOK_COMMENT_ACTIONS:
+            return None
+        issue = body.get("issue", {})
+        comment = body.get("comment", {})
+        title = issue.get("title", "")
+        body_text = _truncate_text(comment.get("body") or "")
+        html_url = comment.get("html_url", "")
+        issue_url = issue.get("html_url", "")
+        # 检测是否为 PR 评论
+        if issue.get("pull_request") or "/pull/" in issue_url:
+            type_desc = "评论 (PR)"
+            canonical_url = _clean_canonical_url(issue_url)
+        else:
+            type_desc = "评论 (Issue)"
+            canonical_url = _clean_canonical_url(issue_url)
+        return {
+            "repo": repo_name,
+            "type_desc": type_desc,
+            "actor": actor_name,
+            "action": action,
+            "action_cn": "评论了",
+            "title": title,
+            "body": body_text,
+            "url": html_url,
+            "screenshot_url": html_url,
+            "canonical_url": canonical_url or html_url,
+        }
+
+    if event_type == "pull_request_review_comment":
+        action = body.get("action", "")
+        if action not in _WEBHOOK_COMMENT_ACTIONS:
+            return None
+        pr_data = body.get("pull_request", {})
+        comment = body.get("comment", {})
+        title = pr_data.get("title", "")
+        body_text = _truncate_text(comment.get("body") or "")
+        html_url = comment.get("html_url", "")
+        pr_url = pr_data.get("html_url", "")
+        return {
+            "repo": repo_name,
+            "type_desc": "评论 (PR Review)",
+            "actor": actor_name,
+            "action": action,
+            "action_cn": "评论了",
+            "title": title,
+            "body": body_text,
+            "url": html_url,
+            "screenshot_url": pr_url + "/files" if pr_url else "",
+            "canonical_url": _clean_canonical_url(pr_url or html_url),
+        }
+
+    return None
