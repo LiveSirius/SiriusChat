@@ -483,8 +483,13 @@ def _extract_event_info(event: dict[str, Any]) -> dict[str, Any]:
             compare_url = f"https://github.com/{repo_name}/compare/{before_sha}...{head_sha}"
         else:
             compare_url = ""
-        # 分享链接优先 compare URL，其次 commit 页面
-        html_url = compare_url or (f"https://github.com/{repo_name}/commit/{commits[0]['sha']}" if commits else "")
+        # 分享链接优先 compare URL，其次 commit 页面，无 commits 时回退仓库主页
+        if compare_url:
+            html_url = compare_url
+        elif commits:
+            html_url = f"https://github.com/{repo_name}/commit/{commits[0]['sha']}"
+        else:
+            html_url = f"https://github.com/{repo_name}"
         canonical_url = _clean_canonical_url(html_url)
         # 截图用 compare URL（直观看到所有变更 diff），其次 commit 页面
         screenshot_url = compare_url or html_url
