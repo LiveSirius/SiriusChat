@@ -59,6 +59,58 @@ class EngineProxy:
             task_name="plugin_analyze",
         )
 
+    async def generate_raw(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str = "",
+        model: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+    ) -> str:
+        """直接调用 LLM provider，绕过引擎管线。
+
+        不经过 tone_alignment、rhythm_analysis、token_tracking 等 chat 场景下
+        才有意义的步骤，适合 Plugin 中纯编程/分析类文本生成。
+
+        Args:
+            prompt: 用户消息（作为 messages 中最后一条 user 消息）
+            system_prompt: 系统指令（可选）
+            model: 模型名（默认使用引擎的聊天模型）
+            temperature: 采样温度
+            max_tokens: 最大生成 token 数
+        """
+        if self._engine is None:
+            return "[引擎未绑定]"
+        provider = getattr(self._engine, "provider_async", None)
+        if provider is None:
+            return "[未配置 provider]"
+
+        from sirius_chat.providers.base import GenerationRequest
+
+        resolved_model = model
+        if resolved_model is None:
+            model_router = getattr(self._engine, "model_router", None)
+            if model_router is not None:
+                cfg = model_router.resolve("plugin_generate")
+                resolved_model = cfg.model_name
+
+        messages: list[dict[str, object]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        request = GenerationRequest(
+            model=resolved_model or "",
+            system_prompt="",
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=60.0,
+            purpose="plugin_raw",
+        )
+        return await provider.generate_async(request)
+
     def get_persona_name(self) -> str:
         """获取当前人格名称。"""
         if self._engine is None:
