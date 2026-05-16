@@ -476,16 +476,18 @@ def _extract_event_info(event: dict[str, Any]) -> dict[str, Any]:
             msg_first_line = (c.get("message", "")).split("\n")[0][:100]
             commit_lines.append(f"- {msg_first_line}")
         body = "\n".join(commit_lines)
-        # 优先使用 compare URL（展示具体变更 diff），其次使用仓库主页
+        # 分享链接使用 compare URL（diff 总览），其次仓库主页
         html_url = payload.get("compare", "") or f"https://github.com/{repo_name}"
         canonical_url = _clean_canonical_url(html_url)
+        # 截图用最新 commit 页面（可直接看到代码变更）
+        latest_sha = commits[0].get("sha", "") if commits else ""
+        commit_screenshot_url = f"https://github.com/{repo_name}/commit/{latest_sha}" if latest_sha else ""
 
-    # 截图 URL：PR 事件截 /files diff 页，Push 截 compare 页，其余截各自页面
+    # 截图 URL：PR 截 /files diff 页，Push 截最新 commit 页，其余截各自页面
     if etype in ("PullRequestEvent", "PullRequestReviewCommentEvent"):
         screenshot_url = html_url + "/files" if html_url else ""
     elif etype == "PushEvent":
-        # html_url 已优先使用 compare URL，直接用即可
-        screenshot_url = html_url
+        screenshot_url = commit_screenshot_url or html_url
     else:
         screenshot_url = html_url
 
