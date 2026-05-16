@@ -212,7 +212,7 @@ async def _poll_github_events(ctx: Any) -> None:
 
             if not events:
                 # API 调用成功但无事件，更新时间戳避免频繁空轮询
-                logger.info("github_monitor: %s 无新事件", repo_key)
+                logger.debug("github_monitor: %s 无新事件", repo_key)
                 last_poll[repo_key] = now
                 store.set("_last_poll_at", last_poll)
                 store.save()
@@ -476,19 +476,23 @@ def _extract_event_info(event: dict[str, Any]) -> dict[str, Any]:
             msg_first_line = (c.get("message", "")).split("\n")[0][:100]
             commit_lines.append(f"- {msg_first_line}")
         body = "\n".join(commit_lines)
-        # 分享链接使用 compare URL（diff 总览），其次仓库主页
-        html_url = payload.get("compare", "") or f"https://github.com/{repo_name}"
+        # 用 before/head 自行拼接 compare URL，覆盖本轮全部 commit 的 diff
+        before_sha = payload.get("before", "")
+        head_sha = payload.get("head", "")
+        if before_sha and head_sha and before_sha != "0000000000000000000000000000000000000000":
+            compare_url = f"https://github.com/{repo_name}/compare/{before_sha}...{head_sha}"
+        else:
+            compare_url = ""
+        # 分享链接优先 compare URL，其次 commit 页面
+        html_url = compare_url or (f"https://github.com/{repo_name}/commit/{commits[0]['sha']}" if commits else "")
         canonical_url = _clean_canonical_url(html_url)
-        # 截图用最新 commit 页面（可直接看到代码变更）
-        latest_sha = commits[0].get("sha", "") if commits else ""
-        commit_screenshot_url = f"https://github.com/{repo_name}/commit/{latest_sha}" if latest_sha else ""
+        # 截图用 compare URL（直观看到所有变更 diff），其次 commit 页面
+        screenshot_url = compare_url or html_url
 
-    # 截图 URL：PR 截 /files diff 页，Push 截最新 commit 页，其余截各自页面
+    # 截图 URL：PR 截 /files diff 页，Push 已在上方设好，其余截各自页面
     if etype in ("PullRequestEvent", "PullRequestReviewCommentEvent"):
         screenshot_url = html_url + "/files" if html_url else ""
-    elif etype == "PushEvent":
-        screenshot_url = commit_screenshot_url or html_url
-    else:
+    elif etype != "PushEvent":
         screenshot_url = html_url
 
     return {
