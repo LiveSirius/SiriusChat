@@ -271,7 +271,7 @@ class EngineRuntime:
             if count > 0:
                 LOG.info("平台 adapter 已注入 %d 个 Plugin 实例", count)
 
-    def _setup_plugin_runtime(self, engine: EmotionalGroupChatEngine) -> None:
+    async def _setup_plugin_runtime(self, engine: "EmotionalGroupChatEngine") -> None:
         """初始化 Plugin 系统：加载插件、注册、注入到引擎。
 
         Plugin 目录位于项目根：plugins/
@@ -327,7 +327,7 @@ class EngineRuntime:
         dispatcher = OutputDispatcher()
 
         # 实例化所有 Plugin
-        count = executor.instantiate_all()
+        count = await executor.instantiate_all()
         LOG.info("Plugin 实例化完成: %d/%d", count, registry.plugin_count)
 
         # 注入到引擎
@@ -347,7 +347,7 @@ class EngineRuntime:
             LOG.debug("加载 experience 配置失败，使用默认值: %s", exc)
             return PersonaExperienceConfig()
 
-    def _build_engine(self) -> EmotionalGroupChatEngine:
+    async def _build_engine(self) -> "EmotionalGroupChatEngine":
         provider = self._build_provider()
         if provider is None:
             raise RuntimeError(
@@ -452,16 +452,21 @@ class EngineRuntime:
 
         # 初始化并注入 Plugin runtime（v1.2+）
         try:
-            self._setup_plugin_runtime(engine)
+            await self._setup_plugin_runtime(engine)
         except Exception as exc:
             LOG.warning("Plugin runtime 初始化失败: %s", exc)
 
         return engine
 
     @property
-    def engine(self) -> EmotionalGroupChatEngine:
+    def engine(self) -> "EmotionalGroupChatEngine":
         if self._engine is None:
-            self._engine = self._build_engine()
+            raise RuntimeError("Engine not initialized - call await start() first")
+        return self._engine
+
+    async def _ensure_engine(self) -> "EmotionalGroupChatEngine":
+        if self._engine is None:
+            self._engine = await self._build_engine()
             self._engine.start_background_tasks()
         return self._engine
 
@@ -472,7 +477,7 @@ class EngineRuntime:
         # 预热引擎：在加载时就完成初始化，避免第一个消息到达时才加载
         if self.has_provider_config() and self.has_persona():
             try:
-                _ = self.engine
+                await self._ensure_engine()
                 LOG.info("EmotionalGroupChatEngine v1.0 已预热启动")
             except Exception as exc:
                 LOG.warning("引擎预热失败（配置可能不完整）: %s", exc)

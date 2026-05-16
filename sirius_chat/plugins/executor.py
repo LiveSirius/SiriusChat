@@ -44,7 +44,7 @@ class PluginExecutor:
 
     # ── Plugin 生命周期 ──
 
-    def instantiate(self, definition: "PluginDefinition") -> object | None:
+    async def instantiate(self, definition: "PluginDefinition") -> object | None:
         """从 PluginDefinition 创建 PluginBase 实例。
 
         Args:
@@ -86,9 +86,13 @@ class PluginExecutor:
         if definition.source_path:
             instance._set_source_path(definition.source_path)
 
-        # 调用 on_load
+        # 调用 on_load（支持同步和异步）
         try:
-            instance.on_load()
+            on_load = instance.on_load
+            if asyncio.iscoroutinefunction(on_load):
+                await on_load()
+            else:
+                on_load()
         except Exception as exc:
             logger.warning("Plugin %s on_load 失败: %s", definition.name, exc)
 
@@ -103,7 +107,7 @@ class PluginExecutor:
         logger.info("实例化 Plugin: %s", definition.name)
         return instance
 
-    def instantiate_all(self) -> int:
+    async def instantiate_all(self) -> int:
         """实例化所有已注册的 Plugin。
 
         Returns:
@@ -111,7 +115,7 @@ class PluginExecutor:
         """
         count = 0
         for definition in self._registry.get_all_definitions():
-            instance = self.instantiate(definition)
+            instance = await self.instantiate(definition)
             if instance is not None:
                 self._registry.set_instance(definition.name, instance)
                 count += 1
@@ -176,7 +180,7 @@ class PluginExecutor:
         # ── 获取或创建实例 ──
         instance = self._registry.get_instance(plugin_name)
         if instance is None:
-            instance = self.instantiate(definition)
+            instance = await self.instantiate(definition)
             if instance is not None:
                 self._registry.set_instance(plugin_name, instance)
         if instance is None:
@@ -282,17 +286,21 @@ class PluginExecutor:
 
     # ── 卸载 ──
 
-    def unload(self, plugin_name: str) -> None:
+    async def unload(self, plugin_name: str) -> None:
         """卸载指定 Plugin。"""
         instance = self._registry.get_instance(plugin_name)
         if instance is not None and hasattr(instance, 'on_unload'):
             try:
-                instance.on_unload()
+                on_unload = instance.on_unload
+                if asyncio.iscoroutinefunction(on_unload):
+                    await on_unload()
+                else:
+                    on_unload()
             except Exception as exc:
                 logger.warning("Plugin %s on_unload 失败: %s", plugin_name, exc)
         self._registry.unregister(plugin_name)
 
-    def unload_all(self) -> None:
+    async def unload_all(self) -> None:
         """卸载所有 Plugin。"""
         for name in list(self._registry.plugin_names):
-            self.unload(name)
+            await self.unload(name)
