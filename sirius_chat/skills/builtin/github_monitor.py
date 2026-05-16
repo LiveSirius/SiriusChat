@@ -53,6 +53,10 @@ _MIN_BG_INTERVAL = 30
 _MAX_EVENTS_PER_PAGE = 30
 _MAX_COMMITS_IN_BODY = 5
 _MAX_API_RETRIES = 3
+_MAX_SCREENSHOT_RETRIES = 3
+
+# PR 合并提交的消息模式（GitHub 自动生成）
+_PR_MERGE_COMMIT_PATTERN = re.compile(r"^Merge pull request #\d+ from ")
 
 # 用户配置的事件类型 → GitHub Event API type 集合
 _EVENT_TYPE_FILTER: dict[str, set[str]] = {
@@ -183,7 +187,7 @@ async def _poll_github_events(ctx: Any) -> None:
             since = last_ts.get(repo_key)
 
             # 拉取事件（带重试）
-            logger.info("github_monitor: 正在获取 %s 事件... (%s)", repo_key, api_base_url)
+            logger.debug("github_monitor: 正在获取 %s 事件... (%s)", repo_key, api_base_url)
             events: list[dict[str, Any]] = []
             last_error = None
             for attempt in range(1, _MAX_API_RETRIES + 1):
@@ -215,14 +219,25 @@ async def _poll_github_events(ctx: Any) -> None:
                 continue
 
             # 筛选 since 之后的新事件，只保留启用的类型并按时间倒序
+            # 同时跳过 PR 合并导致的 PushEvent（与 PullRequestEvent 重复）
             new_events: list[dict[str, Any]] = []
+            skipped_pr_merges = 0
             for event in events:
                 created_at = event.get("created_at", "")
                 if since and created_at <= since:
                     continue
                 if event.get("type", "") not in allowed_types:
                     continue
+                if _is_pr_merge_push_event(event):
+                    skipped_pr_merges += 1
+                    continue
                 new_events.append(event)
+
+            if skipped_pr_merges:
+                logger.debug(
+                    "github_monitor: %s 跳过了 %d 条 PR 合并 Push 事件（与 PullRequestEvent 重复）",
+                    repo_key, skipped_pr_merges,
+                )
 
             if not new_events:
                 # API 调用成功，新事件筛选后为空，更新时间戳
@@ -252,34 +267,46 @@ async def _poll_github_events(ctx: Any) -> None:
                 )
                 continue
 
-            # 按时间正序处理（先发生的先播报）
-            logger.info(
-                "github_monitor: %s 发现 %d 条新事件，开始处理",
-                repo_key, len(new_events),
-            )
+            # 提取事件信息并按规范 URL 分组合并
+            # 同一 Issue/PR/Release 页面上的多个事件合并为一次通知，
+            # 避免对同一页面重复截图和 LLM 调用
+            grouped: dict[str, list[dict[str, Any]]] = {}
             for event in reversed(new_events):
                 event_info = _extract_event_info(event)
-                url = event_info.get("url", "")
+                canonical = event_info.get("canonical_url", event_info.get("url", ""))
+                grouped.setdefault(canonical, []).append(event_info)
 
-                # 截图：每个事件仅一次
+            logger.info(
+                "github_monitor: %s 发现 %d 条新事件，合并为 %d 组",
+                repo_key, len(new_events), len(grouped),
+            )
+
+            for canonical_url, group in grouped.items():
+                merged_info = _merge_event_group(group)
+
+                # 截图：PR 事件截 /files diff 页，Push 截 compare 页，其余截主页面
                 screenshot_path: str | None = None
-                if url:
+                screenshot_url = merged_info.get("screenshot_url", "") or merged_info.get("url", "") or canonical_url
+                if screenshot_url:
                     try:
-                        screenshot_path = await _take_screenshot(url, store)
+                        screenshot_path = await _take_screenshot(screenshot_url, store)
                     except Exception as exc:
-                        logger.warning("github_monitor: 截图失败 (%s): %s", url, exc)
+                        logger.warning("github_monitor: 截图失败 (%s): %s", screenshot_url, exc)
 
-                # LLM 生成：每个事件仅调用一次
+                # LLM 生成：每个合并组仅调用一次
                 notification = await _generate_notification_text(
-                    ctx, event_info, screenshot_path
+                    ctx, merged_info, screenshot_path
                 )
 
                 if not notification:
                     continue
 
+                merged_count = merged_info.get("merged_count", 1)
                 ctx.log_inner_thought(
-                    f"github_monitor: [{event_info['repo']}] {event_info['actor']} "
-                    f"{event_info['action_cn']}{event_info['type_desc']} - 通知已生成，分发到 {len(target_groups)} 个群"
+                    f"github_monitor: [{merged_info['repo']}] {merged_info['actor']} "
+                    f"{'、'.join(merged_info.get('merged_actions', [merged_info.get('action_cn', '') + merged_info.get('type_desc', '')]))} "
+                    f"({'合并' + str(merged_count) + '条事件' if merged_count > 1 else '1条事件'})"
+                    f" - 通知已生成，分发到 {len(target_groups)} 个群"
                 )
 
                 # 分发给所有订阅群
@@ -304,6 +331,22 @@ async def _poll_github_events(ctx: Any) -> None:
 # ═══════════════════════════════════════════════════════════════════════
 # GitHub API 交互
 # ═══════════════════════════════════════════════════════════════════════
+
+
+def _is_pr_merge_push_event(event: dict[str, Any]) -> bool:
+    """判断一个 PushEvent 是否全部由 PR 合并提交构成。
+
+    PR 合并后 GitHub 会自动生成 "Merge pull request #XX from ..." 提交并推送，
+    这些 PushEvent 与 PullRequestEvent（merged）重复，应跳过以去噪。
+    """
+    if event.get("type", "") != "PushEvent":
+        return False
+    commits: list[dict[str, Any]] = (event.get("payload", {}) or {}).get("commits", [])
+    if not commits:
+        return False
+    return all(
+        _PR_MERGE_COMMIT_PATTERN.match(c.get("message", "")) for c in commits
+    )
 
 
 async def _fetch_repo_events(
@@ -332,7 +375,7 @@ async def _fetch_repo_events(
     resp.raise_for_status()
     data = resp.json()
     events_list = data if isinstance(data, list) else []
-    logger.info(
+    logger.debug(
         "github_monitor: %s/%s API 200, 获取到 %d 条事件",
         owner, repo, len(events_list),
     )
@@ -342,6 +385,20 @@ async def _fetch_repo_events(
 # ═══════════════════════════════════════════════════════════════════════
 # 事件信息提取
 # ═══════════════════════════════════════════════════════════════════════
+
+
+def _clean_canonical_url(url: str) -> str:
+    """规范化 URL 用于分组合并：去除 fragment (#xxx) 和尾部斜杠。
+
+    确保如 /pull/2 与 /pull/2#issuecomment-xxx 能正确归入同一组。
+    """
+    if not url:
+        return url
+    # 去除 fragment 锚点
+    cleaned = url.split("#")[0]
+    # 去除尾部斜杠
+    cleaned = cleaned.rstrip("/")
+    return cleaned
 
 
 def _extract_event_info(event: dict[str, Any]) -> dict[str, Any]:
@@ -355,21 +412,26 @@ def _extract_event_info(event: dict[str, Any]) -> dict[str, Any]:
     repo_name = repo_info.get("name", "未知仓库")
     actor_name = actor.get("display_login") or actor.get("login", "未知用户")
     html_url = ""
+    canonical_url = ""
     title = ""
     body = ""
     action = payload.get("action", "")
     action_cn = _ACTION_DESC.get(action, action)
+    # type_desc 默认从映射表取，PR 评论会覆盖
+    type_desc = _TYPE_DESC.get(etype, etype)
 
     if etype == "IssuesEvent":
         issue = payload.get("issue", {})
         title = issue.get("title", "")
         body = _truncate_text(issue.get("body") or "")
         html_url = issue.get("html_url", "")
+        canonical_url = _clean_canonical_url(html_url)
     elif etype == "PullRequestEvent":
         pr_data = payload.get("pull_request", {})
         title = pr_data.get("title", "")
         body = _truncate_text(pr_data.get("body") or "")
         html_url = pr_data.get("html_url", "")
+        canonical_url = _clean_canonical_url(html_url)
         # PR 的 merged 动作特殊处理
         if pr_data.get("merged") and action == "closed":
             action_cn = "合并了"
@@ -378,6 +440,7 @@ def _extract_event_info(event: dict[str, Any]) -> dict[str, Any]:
         title = release.get("name") or release.get("tag_name", "")
         body = _truncate_text(release.get("body") or "")
         html_url = release.get("html_url", "")
+        canonical_url = _clean_canonical_url(html_url)
     elif etype in (
         "IssueCommentEvent",
         "PullRequestReviewCommentEvent",
@@ -389,9 +452,20 @@ def _extract_event_info(event: dict[str, Any]) -> dict[str, Any]:
         if etype == "IssueCommentEvent":
             issue = payload.get("issue", {})
             title = issue.get("title", "")
+            # 检测是否为 PR 评论：issue 含 pull_request 字段或 html_url 路径为 /pull/
+            issue_url = issue.get("html_url", "") or html_url
+            if issue.get("pull_request") or "/pull/" in issue_url:
+                type_desc = "评论 (PR)"
+                canonical_url = _clean_canonical_url(issue_url)
+            else:
+                canonical_url = _clean_canonical_url(issue_url)
         elif etype == "PullRequestReviewCommentEvent":
             pr_data = payload.get("pull_request", {})
             title = pr_data.get("title", "") if pr_data else ""
+            canonical_url = _clean_canonical_url(pr_data.get("html_url", html_url) if pr_data else html_url)
+        else:
+            # CommitCommentEvent：规范 URL 为 commit 页面
+            canonical_url = _clean_canonical_url(html_url)
     elif etype == "PushEvent":
         commits: list[dict[str, Any]] = payload.get("commits", [])
         ref = payload.get("ref", "")
@@ -402,19 +476,30 @@ def _extract_event_info(event: dict[str, Any]) -> dict[str, Any]:
             msg_first_line = (c.get("message", "")).split("\n")[0][:100]
             commit_lines.append(f"- {msg_first_line}")
         body = "\n".join(commit_lines)
-        # Push 事件使用 compare URL 或仓库 URL
-        html_url = f"https://github.com/{repo_name}"
+        # 优先使用 compare URL（展示具体变更 diff），其次使用仓库主页
+        html_url = payload.get("compare", "") or f"https://github.com/{repo_name}"
+        canonical_url = _clean_canonical_url(html_url)
+
+    # 截图 URL：PR 类事件截 /files 页面（可直接看到变更 diff）
+    if etype in ("PullRequestEvent", "PullRequestReviewCommentEvent"):
+        screenshot_url = html_url + "/files" if html_url else ""
+    elif etype == "PushEvent" and payload.get("compare"):
+        screenshot_url = payload.get("compare", "")
+    else:
+        screenshot_url = html_url
 
     return {
         "repo": repo_name,
         "type": etype,
-        "type_desc": _TYPE_DESC.get(etype, etype),
+        "type_desc": type_desc,
         "actor": actor_name,
         "action": action,
         "action_cn": action_cn,
         "title": title,
         "body": body,
         "url": html_url,
+        "screenshot_url": screenshot_url,
+        "canonical_url": canonical_url or html_url,
         "created_at": created_at,
     }
 
@@ -429,6 +514,59 @@ def _truncate_text(text: str, max_len: int = 500) -> str:
     if len(cleaned) > max_len:
         return cleaned[:max_len] + "..."
     return cleaned
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 事件合并
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _merge_event_group(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """将同一规范页面（同一 canonical_url）的多个事件合并为一个。
+
+    合并规则：
+    - 以第一个事件为基础，保留 repo / title / url / canonical_url 等页面级字段
+    - 汇总所有事件的 actor 列表（去重）和动作描述列表（去重）
+    - 若只有一个事件则原样返回，不做额外包装
+    """
+    if len(events) == 1:
+        return events[0]
+
+    primary = dict(events[0])
+
+    # 汇总所有参与者（去重保序）
+    actors: list[str] = []
+    seen_actors: set[str] = set()
+    for e in events:
+        actor = e.get("actor", "")
+        if actor and actor not in seen_actors:
+            actors.append(actor)
+            seen_actors.add(actor)
+
+    # 汇总所有动作描述（去重保序）
+    merged_actions: list[str] = []
+    seen_actions: set[str] = set()
+    for e in events:
+        desc = f"{e.get('action_cn', '')}{e.get('type_desc', '')}"
+        if desc and desc not in seen_actions:
+            merged_actions.append(desc)
+            seen_actions.add(desc)
+
+    # 汇总 body：拼接所有非空 body
+    bodies = [e.get("body", "") for e in events if e.get("body", "")]
+    merged_body = "\n---\n".join(bodies) if bodies else primary.get("body", "")
+
+    primary["actor"] = "、".join(actors) if len(actors) > 1 else (actors[0] if actors else primary.get("actor", ""))
+    primary["merged_actions"] = merged_actions
+    primary["merged_count"] = len(events)
+    primary["body"] = merged_body
+    # url 设为规范页面 URL（合并组内所有事件共享的页面链接）
+    primary["url"] = primary.get("canonical_url", primary.get("url", ""))
+    # screenshot_url 若未设则退回到 url（合并后截图仍用规范页面）
+    if not primary.get("screenshot_url"):
+        primary["screenshot_url"] = primary["url"]
+
+    return primary
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -495,7 +633,25 @@ async def _take_screenshot(url: str, store: Any) -> str | None:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 # 等待页面渲染完成
                 await asyncio.sleep(2)
-                await page.screenshot(path=str(output_path), full_page=True)
+
+                # 全页截图：失败时重试（每次等待更久让页面充分渲染）
+                last_error = None
+                for attempt in range(1, _MAX_SCREENSHOT_RETRIES + 1):
+                    try:
+                        await page.screenshot(path=str(output_path), full_page=True)
+                        last_error = None
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                        if attempt < _MAX_SCREENSHOT_RETRIES:
+                            logger.debug(
+                                "github_monitor: full_page 截图第 %d 次失败，%.1fs 后重试 (%s): %s",
+                                attempt, 2.0 * attempt, url, exc,
+                            )
+                            await asyncio.sleep(2.0 * attempt)
+                if last_error is not None:
+                    raise last_error
+
                 await context.close()
                 logger.info("github_monitor: 截图已保存 → %s", output_path)
                 return str(output_path)
@@ -546,7 +702,10 @@ async def _generate_notification_text(
             f"要求：\n"
             f"- 不要机械复述，像朋友分享新鲜事一样自然\n"
             f"- 简短即可，2-4 句话\n"
+            f"- 必须明确提到「操作者」是谁（不要混淆为你人格设定中的人），"
+            f"这个操作者是真实的 GitHub 用户\n"
             f"- 提到关键信息：谁、做了什么、涉及什么仓库\n"
+            f"- 必须在播报末尾附带「链接」中的网址，让群友可以直接点击跳转\n"
             f"- 可以表达你的感受（惊讶、期待、好奇等），但要符合你的人设\n"
             f"- 如果附带了页面截图，请结合截图内容描述具体变化"
         )
@@ -598,8 +757,15 @@ def _build_event_section(
         f"事件: {event_info['type_desc']}",
         f"操作者: {event_info['actor']}",
     ]
-    if event_info.get("action_cn"):
+
+    # 合并事件：列出所有动作
+    merged_actions = event_info.get("merged_actions")
+    if merged_actions:
+        lines.append(f"合并动作: {'、'.join(merged_actions)}")
+        lines.append(f"（本组共合并了 {event_info.get('merged_count', 1)} 条关联事件）")
+    elif event_info.get("action_cn"):
         lines.append(f"动作: {event_info['action_cn']}")
+
     if event_info.get("title"):
         lines.append(f"标题: {event_info['title']}")
     if event_info.get("body"):
@@ -615,12 +781,19 @@ def _build_fallback_notification(event_info: dict[str, Any]) -> str:
     """LLM 调用失败时的降级纯文本通知。"""
     repo = event_info.get("repo", "未知仓库")
     actor = event_info.get("actor", "有人")
-    action_cn = event_info.get("action_cn", "")
-    type_desc = event_info.get("type_desc", "")
     title = event_info.get("title", "")
     url = event_info.get("url", "")
 
-    parts = [f"🔔 [{repo}] {actor} {action_cn}{type_desc}"]
+    # 合并事件：列出所有动作
+    merged_actions = event_info.get("merged_actions")
+    if merged_actions:
+        action_desc = "、".join(merged_actions)
+        parts = [f"🔔 [{repo}] {actor} {action_desc}"]
+    else:
+        action_cn = event_info.get("action_cn", "")
+        type_desc = event_info.get("type_desc", "")
+        parts = [f"🔔 [{repo}] {actor} {action_cn}{type_desc}"]
+
     if title:
         parts.append(f"「{title}」")
     if url:
