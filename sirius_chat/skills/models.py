@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Awaitable, Protocol
 
+from sirius_chat.config.models import ConfigParameter
 from sirius_chat.memory import UserProfile
 
 # Pre-compiled regex for skill-chain template placeholders (${skill_name} / ${skill_name.field})
@@ -26,14 +27,13 @@ class SkillContentBlock:
 
 
 @dataclass(slots=True)
-class SkillParameter:
-    """Definition of a single skill parameter."""
+class SkillParameter(ConfigParameter):
+    """Skill 参数定义 —— 继承 ConfigParameter，完全复用公共字段。
 
-    name: str
-    type: str  # "str", "int", "float", "bool", "list[str]", "dict"
-    description: str
-    required: bool = False
-    default: Any = None
+    参数结构由 SKILL_META["parameters"] 在 SkillRegistry 中解析生成。
+    """
+
+    pass
 
 
 @dataclass(slots=True)

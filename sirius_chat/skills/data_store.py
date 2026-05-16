@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -51,31 +50,17 @@ class SkillDataStore:
             self._load()
 
     def save(self) -> None:
-        """Persist current data to disk (only if modified).
+        """持久化当前数据到磁盘（仅在修改后写入）。
 
-        Uses a unique temporary file + atomic replace to avoid corrupting
-        the store when multiple threads save concurrently.
+        使用原子 JSON 保存，避免多个线程并发写入时损坏数据。
         """
         with self._lock:
             if not self._dirty:
                 return
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            # Use a process-unique temp file so concurrent saves do not
-            # stomp on each other's temporary file.
-            fd, temp_path = tempfile.mkstemp(
-                suffix=".tmp",
-                prefix=self._path.stem + ".",
-                dir=self._path.parent,
-            )
-            try:
-                with open(fd, "w", encoding="utf-8") as f:
-                    json.dump(self._data, f, ensure_ascii=False, indent=2)
-                Path(temp_path).replace(self._path)
-                self._dirty = False
-            except OSError:
-                # If atomic replace fails, at least don't leave a corrupted main file
-                logger.warning("SKILL数据存储写入失败 (%s)", self._path)
-                raise
+            from sirius_chat.config.file_io import atomic_json_save
+
+            atomic_json_save(self._path, self._data)
+            self._dirty = False
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a value by key."""

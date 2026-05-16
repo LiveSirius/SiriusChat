@@ -315,6 +315,21 @@ class OrchestrationPolicy:
 
 
 @dataclass(slots=True)
+class ConfigParameter:
+    """通用配置参数定义 —— Plugin 和 Skill 系统共享。
+
+    被 PluginParameterDef 和 SkillParameter 继承或引用，
+    提供统一的前端表单渲染与参数校验契约。
+    """
+
+    name: str
+    type: str = "str"  # str | int | float | bool | list[str]
+    description: str = ""
+    required: bool = False
+    default: Any = None
+
+
+@dataclass(slots=True)
 class TokenUsageRecord(JsonSerializable):
     """Record of token usage for a task execution."""
     

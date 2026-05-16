@@ -134,10 +134,9 @@ class PluginConfigManager:
     
     def _save(self) -> None:
         """保存配置到磁盘。"""
-        self._plugins_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._config_path.with_suffix(self._config_path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self._config, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self._config_path)
+        from sirius_chat.config.file_io import atomic_json_save
+
+        atomic_json_save(self._config_path, self._config)
         logger.debug("配置已保存")
     
     def _notify_change(self, plugin_name: str) -> None:

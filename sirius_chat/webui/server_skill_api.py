@@ -54,11 +54,9 @@ def _load_persona_skill_config(persona_dir: Path) -> dict[str, Any]:
 
 def _save_persona_skill_config(persona_dir: Path, config: dict[str, Any]) -> None:
     """保存人格级 skill 配置。"""
-    path = _persona_skill_config_path(persona_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    from sirius_chat.config.file_io import atomic_json_save
+
+    atomic_json_save(_persona_skill_config_path(persona_dir), config)
 
 
 async def api_persona_skills_get(request: web.Request, persona_manager: Any) -> web.Response:

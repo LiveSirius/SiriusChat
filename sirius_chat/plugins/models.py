@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from sirius_chat.config.models import ConfigParameter
+
 
 class RenderMode(enum.Enum):
     """Plugin 输出策略。
@@ -148,14 +150,9 @@ class PluginEventDef:
 
 
 @dataclass(slots=True)
-class PluginParameterDef:
-    """Plugin 参数定义。"""
+class PluginParameterDef(ConfigParameter):
+    """Plugin 参数定义 —— 继承 ConfigParameter，新增命令行特有字段。"""
 
-    name: str
-    type: str = "str"                      # str | int | float | bool | list[str]
-    description: str = ""
-    required: bool = False
-    default: Any = None
     position: int = 0                      # 位置参数序号
     choices: list[str] | None = None       # 可选值限制
 

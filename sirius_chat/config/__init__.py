@@ -10,6 +10,7 @@ from __future__ import annotations
 from sirius_chat.config.models import (
     Agent,
     AgentPreset,
+    ConfigParameter,
     MemoryPolicy,
     MultiModelConfig,
     OrchestrationPolicy,
@@ -36,10 +37,14 @@ from sirius_chat.config.helpers import (
     setup_multimodel_config,
 )
 
+# File I/O utilities
+from sirius_chat.config.file_io import atomic_json_save
+
 __all__ = [
     # Models
     "Agent",
     "AgentPreset",
+    "ConfigParameter",
     "MemoryPolicy",
     "MultiModelConfig",
     "OrchestrationPolicy",
@@ -51,6 +56,8 @@ __all__ = [
     "WorkspaceConfig",
     # Management
     "ConfigManager",
+    # File I/O
+    "atomic_json_save",
     # Helpers
     "configure_full_orchestration",
     "configure_orchestration_models",
