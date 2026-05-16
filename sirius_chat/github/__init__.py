@@ -9,10 +9,12 @@
 
 from sirius_chat.github.client import GitHubClient, github_headers
 from sirius_chat.github.event_bridge import (
+    get_issue_repos,
     notify_issue_opened,
     notify_pr_event,
     register_issue_handler,
     register_pr_handler,
+    set_issue_repos,
 )
 from sirius_chat.github.events import fetch_repo_events
 from sirius_chat.github.webhook import GitHubWebhookServer, RepoFilter, WebhookHandler, verify_signature
@@ -24,9 +26,11 @@ __all__ = [
     "WebhookHandler",
     "fetch_repo_events",
     "github_headers",
+    "get_issue_repos",
     "notify_issue_opened",
     "notify_pr_event",
     "register_issue_handler",
     "register_pr_handler",
+    "set_issue_repos",
     "verify_signature",
 ]

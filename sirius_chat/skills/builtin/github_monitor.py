@@ -40,7 +40,11 @@ from typing import Any
 
 from sirius_chat.github import GitHubWebhookServer, fetch_repo_events
 from sirius_chat.github.client import GitHubClient
-from sirius_chat.github.event_bridge import notify_issue_opened, notify_pr_event
+from sirius_chat.github.event_bridge import (
+    get_issue_repos,
+    notify_issue_opened,
+    notify_pr_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -354,6 +358,12 @@ async def _poll_github_events(ctx: Any) -> None:
             for canonical_url, group in grouped.items():
                 merged_info = _merge_event_group(group)
 
+                # 若仓库在 coding_agent 覆盖范围内且事件为纯 "opened"：
+                # 跳过通知，等 coding 贴标签后的 "labeled" 事件再推送
+                if _should_skip_for_coding(merged_info, repo_key):
+                    logger.debug("github_monitor: %s Issue opened 跳过通知（等待 coding 贴标签）", repo_key)
+                    continue
+
                 # 截图：PR 事件截 /files diff 页，Push 截 compare 页，其余截主页面
                 screenshot_path: str | None = None
                 screenshot_url = (
@@ -402,11 +412,6 @@ async def _poll_github_events(ctx: Any) -> None:
             store.save()
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# GitHub API 交互
-# ═══════════════════════════════════════════════════════════════════════
-
-
 def _is_pr_merge_push_event(event: dict[str, Any]) -> bool:
     """判断一个 PushEvent 是否全部由 PR 合并提交构成。
 
@@ -419,6 +424,15 @@ def _is_pr_merge_push_event(event: dict[str, Any]) -> bool:
     if not commits:
         return False
     return all(_PR_MERGE_COMMIT_PATTERN.match(c.get("message", "")) for c in commits)
+
+
+def _should_skip_for_coding(merged_info: dict[str, Any], repo_key: str) -> bool:
+    """判断是否应跳过通知 — coding_agent 会处理该仓库的 Issue，等待 labeled 后再推送。"""
+    if merged_info.get("type") != "IssuesEvent":
+        return False
+    if merged_info.get("action") != "opened":
+        return False
+    return repo_key in get_issue_repos()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -913,6 +927,12 @@ async def _handle_webhook_event(event_type: str, body: dict[str, Any]) -> None:
     # 二次校验：仅处理 webhook 模式的仓库（防止配置变更后仍收到旧仓库的事件）
     if repo_mode != "webhook":
         logger.debug("github_monitor (webhook): 仓库 %s 已非 webhook 模式，忽略", repo_name)
+        return
+
+    # coding_agent 覆盖的仓库：跳过 Issue "opened" 通知，
+    # 等待 coding 贴标签后的 "labeled" 事件（由 poll 路径捕获）再推送
+    if event_type == "issues" and body.get("action") == "opened" and repo_name in get_issue_repos():
+        logger.debug("github_monitor (webhook): %s Issue opened 跳过通知（等待 coding 贴标签）", repo_name)
         return
 
     # 截图
