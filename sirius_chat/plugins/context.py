@@ -8,6 +8,7 @@ Plugin 通过 PluginContext 安全地访问引擎和平台能力。
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,19 +65,25 @@ class EngineProxy:
         prompt: str,
         *,
         system_prompt: str = "",
+        messages: list[dict] | None = None,
+        inject_persona: bool = False,
+        task_name: str = "plugin_raw",
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
     ) -> str:
-        """直接调用 LLM provider，绕过引擎管线。
+        """直接调用 LLM provider，绕过引擎管线，但保留 token 用量追踪。
 
-        不经过 tone_alignment、rhythm_analysis、token_tracking 等 chat 场景下
+        不经过 tone_alignment、rhythm_analysis、conversation_depth 等 chat 场景下
         才有意义的步骤，适合 Plugin 中纯编程/分析类文本生成。
 
         Args:
             prompt: 用户消息（作为 messages 中最后一条 user 消息）
             system_prompt: 系统指令（可选）
-            model: 模型名（默认使用引擎的聊天模型）
+            messages: 可选的已有会话历史（不含 system_prompt），将插入到 system_prompt 之后、prompt 之前
+            inject_persona: 是否自动在 system_prompt 开头注入当前人格信息
+            task_name: 认知任务名，用于模型路由（当 model 未指定时）
+            model: 强制指定模型名，优先级高于 task_name 路由
             temperature: 采样温度
             max_tokens: 最大生成 token 数
         """
@@ -86,30 +93,131 @@ class EngineProxy:
         if provider is None:
             return "[未配置 provider]"
 
-        from sirius_chat.providers.base import GenerationRequest
+        from sirius_chat.providers.base import GenerationRequest, estimate_generation_request_input_tokens
 
+        # 1. 人格注入（自动拼装到 system_prompt 开头）
+        if inject_persona:
+            persona = getattr(self._engine, "persona", None)
+            if persona:
+                persona_lines = []
+                name = getattr(persona, "name", "")
+                if name:
+                    persona_lines.append(f"你当前的角色身份是「{name}」。")
+                summary = getattr(persona, "persona_summary", "")
+                if summary:
+                    persona_lines.append(f"角色简介：{summary}")
+                traits = getattr(persona, "personality_traits", [])
+                if traits:
+                    persona_lines.append(f"性格特征：{'、'.join(traits[:3])}")
+                style = getattr(persona, "communication_style", "")
+                if style:
+                    persona_lines.append(f"沟通风格：{style}")
+                if persona_lines:
+                    persona_block = "\n".join(persona_lines)
+                    system_prompt = f"{persona_block}\n\n{system_prompt}" if system_prompt else persona_block
+
+        # 2. 模型解析：model 参数 > task_name 路由 > 默认
         resolved_model = model
         if resolved_model is None:
             model_router = getattr(self._engine, "model_router", None)
             if model_router is not None:
-                cfg = model_router.resolve("plugin_generate")
+                cfg = model_router.resolve(task_name)
                 resolved_model = cfg.model_name
+                # 路由配置中有 temperature/max_tokens 时使用，但保持用户显式传入的优先级
+                if temperature == 0.7:  # 用户未显式修改
+                    temperature = cfg.temperature
+                if max_tokens == 4096:  # 用户未显式修改
+                    max_tokens = cfg.max_tokens
 
-        messages: list[dict[str, object]] = []
+        # 3. 构建消息
+        msgs: list[dict[str, object]] = []
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+            msgs.append({"role": "system", "content": system_prompt})
+        if messages:
+            msgs.extend(messages)
+        msgs.append({"role": "user", "content": prompt})
 
+        # 4. 构建 GenerationRequest
         request = GenerationRequest(
             model=resolved_model or "",
             system_prompt="",
-            messages=messages,
+            messages=msgs,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout_seconds=60.0,
-            purpose="plugin_raw",
+            purpose=task_name,
         )
-        return await provider.generate_async(request)
+
+        # 5. 估算输入 token
+        estimated_input_tokens = estimate_generation_request_input_tokens(request)
+
+        # 6. 调用 provider
+        reply = ""
+        duration_ms = 0.0
+        try:
+            t0 = time.perf_counter()
+            reply = await provider.generate_async(request)
+            duration_ms = round((time.perf_counter() - t0) * 1000, 2)
+        except Exception as exc:
+            logger.warning("[%s] generate_raw 失败: %s", task_name, exc)
+            raise
+
+        # 7. token 用量追踪
+        try:
+            from sirius_chat.config import TokenUsageRecord
+            from sirius_chat.providers.base import get_last_generation_usage
+            from sirius_chat.token.utils import estimate_tokens
+
+            output_chars = len(reply)
+            estimated_output_tokens = estimate_tokens(reply) if reply else 0
+            real_usage = get_last_generation_usage()
+            if real_usage and isinstance(real_usage, dict):
+                prompt_tokens = int(real_usage.get("prompt_tokens", estimated_input_tokens))
+                completion_tokens = int(real_usage.get("completion_tokens", estimated_output_tokens))
+                total_tokens = int(real_usage.get("total_tokens", prompt_tokens + completion_tokens))
+                estimation_method = "provider_real"
+            else:
+                prompt_tokens = estimated_input_tokens
+                completion_tokens = estimated_output_tokens
+                total_tokens = estimated_input_tokens + estimated_output_tokens
+                estimation_method = "tiktoken" if estimated_output_tokens > 0 else "char_div4"
+
+            persona_name = getattr(getattr(self._engine, "persona", None), "name", "")
+            provider_name = getattr(provider, "_last_provider_name", getattr(provider, "_provider_name", "unknown"))
+
+            record = TokenUsageRecord(
+                actor_id="assistant",
+                task_name=task_name,
+                model=resolved_model or "",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                input_chars=len(system_prompt) + len(prompt) + sum(len(str(m.get("content", ""))) for m in (messages or [])),
+                output_chars=output_chars,
+                estimation_method=estimation_method,
+                retries_used=0,
+                persona_name=persona_name,
+                group_id="",
+                provider_name=provider_name,
+                breakdown_json="",
+                duration_ms=duration_ms,
+                conversation_depth=1,
+            )
+
+            records = getattr(self._engine, "token_usage_records", None)
+            if records is not None:
+                records.append(record)
+
+            token_store = getattr(self._engine, "token_store", None)
+            if token_store is not None:
+                try:
+                    token_store.add(record)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("generate_raw token 追踪异常（不阻断）: %s", exc)
+
+        return reply
 
     def get_persona_name(self) -> str:
         """获取当前人格名称。"""
