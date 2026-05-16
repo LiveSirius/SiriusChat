@@ -10,8 +10,10 @@
 from sirius_chat.github.client import GitHubClient, github_headers
 from sirius_chat.github.event_bridge import (
     get_issue_repos,
+    notify_issue_comment,
     notify_issue_opened,
     notify_pr_event,
+    register_comment_handler,
     register_issue_handler,
     register_pr_handler,
     set_issue_repos,
@@ -27,8 +29,10 @@ __all__ = [
     "fetch_repo_events",
     "github_headers",
     "get_issue_repos",
+    "notify_issue_comment",
     "notify_issue_opened",
     "notify_pr_event",
+    "register_comment_handler",
     "register_issue_handler",
     "register_pr_handler",
     "set_issue_repos",

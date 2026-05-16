@@ -13,9 +13,11 @@ logger = logging.getLogger(__name__)
 
 IssueHandler = Callable[[dict[str, Any], str], Awaitable[None]]
 PrHandler = Callable[[dict[str, Any], str, str], Awaitable[None]]
+CommentHandler = Callable[[dict[str, Any], str], Awaitable[None]]
 
 _issue_handlers: list[IssueHandler] = []
 _pr_handlers: list[PrHandler] = []
+_comment_handlers: list[CommentHandler] = []
 
 # 哪些仓库注册了 Issue 处理器（由插件在 on_load 时填入）
 _issue_repos: set[str] = set()
@@ -56,6 +58,16 @@ def register_pr_handler(handler: PrHandler) -> None:
     _pr_handlers.append(handler)
 
 
+def register_comment_handler(handler: CommentHandler) -> None:
+    """注册 Issue 评论事件处理器。
+
+    handler(body: dict, repo_name: str) -> None
+    body 为 GitHub webhook body 格式（含 action/comment/issue/repository）。
+    仅 comment created 事件会触发。
+    """
+    _comment_handlers.append(handler)
+
+
 async def notify_issue_opened(body: dict[str, Any], repo_name: str) -> None:
     """由 github_monitor 调用：通知所有注册者新 Issue 已创建。"""
     for handler in _issue_handlers:
@@ -72,3 +84,12 @@ async def notify_pr_event(body: dict[str, Any], repo_name: str, action: str) -> 
             await handler(body, repo_name, action)
         except Exception:
             logger.exception("PR handler 异常: repo=%s action=%s", repo_name, action)
+
+
+async def notify_issue_comment(body: dict[str, Any], repo_name: str) -> None:
+    """由 github_monitor 调用：通知所有注册者 Issue 新评论。"""
+    for handler in _comment_handlers:
+        try:
+            await handler(body, repo_name)
+        except Exception:
+            logger.exception("Comment handler 异常: repo=%s", repo_name)

@@ -42,6 +42,7 @@ from sirius_chat.github import GitHubWebhookServer, fetch_repo_events
 from sirius_chat.github.client import GitHubClient
 from sirius_chat.github.event_bridge import (
     get_issue_repos,
+    notify_issue_comment,
     notify_issue_opened,
     notify_pr_event,
 )
@@ -337,6 +338,15 @@ async def _poll_github_events(ctx: Any) -> None:
                              "repository": {"full_name": f"{owner}/{repo}"}, "sender": event.get("actor", {})},
                             f"{owner}/{repo}",
                             payload.get("action", ""),
+                        )
+                elif etype == "IssueCommentEvent":
+                    payload = event.get("payload", {}) or {}
+                    if payload.get("action") == "created":
+                        await notify_issue_comment(
+                            {"action": "created", "comment": payload.get("comment", {}),
+                             "issue": payload.get("issue", {}),
+                             "repository": {"full_name": f"{owner}/{repo}"}, "sender": event.get("actor", {})},
+                            f"{owner}/{repo}",
                         )
 
             # 提取事件信息并按规范 URL 分组合并
@@ -910,6 +920,8 @@ async def _handle_webhook_event(event_type: str, body: dict[str, Any]) -> None:
         asyncio.create_task(notify_issue_opened(body, repo_name))
     elif event_type == "pull_request" and body.get("action") in ("opened", "synchronize"):
         asyncio.create_task(notify_pr_event(body, repo_name, body.get("action", "")))
+    elif event_type == "issue_comment" and body.get("action") == "created":
+        asyncio.create_task(notify_issue_comment(body, repo_name))
 
     # 查找该仓库的 target_groups
     repos: list[dict[str, Any]] = list(store.get("repos", []))
