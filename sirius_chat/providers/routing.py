@@ -386,7 +386,7 @@ class AutoRoutingProvider(AsyncLLMProvider):
             f"无法为模型 '{model}' 找到合适的提供商。请确保在 provider_keys.json 或配置中的 'models' 列表中包含了该模型。"
         )
 
-    async def generate_async(self, request: GenerationRequest) -> str:
+    async def generate_async(self, request: GenerationRequest, return_reasoning: bool = False) -> str | tuple[str, str]:
         selected, matched_by = self._pick_provider(request.model)
         logger.debug(
             "[Provider路由] model=%s | purpose=%s | provider_type=%s | matched_by=%s | base_url=%s | healthcheck_model=%s | models=%s",
@@ -400,7 +400,7 @@ class AutoRoutingProvider(AsyncLLMProvider):
         )
         provider = self._create_provider(selected)
         self._last_provider_name = getattr(provider, "_provider_name", selected.provider_type)
-        return await provider.generate_async(request)
+        return await provider.generate_async(request, return_reasoning=return_reasoning)
 
 
 async def probe_provider_availability(

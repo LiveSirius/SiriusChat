@@ -253,6 +253,9 @@ class LLMProvider(Protocol):
 
 @runtime_checkable
 class AsyncLLMProvider(Protocol):
-    async def generate_async(self, request: GenerationRequest) -> str:
-        """Generate one assistant message asynchronously from the upstream provider."""
+    async def generate_async(self, request: GenerationRequest, return_reasoning: bool = False) -> str | tuple[str, str]:
+        """Generate one assistant message asynchronously from the upstream provider.
+
+        When return_reasoning=True, returns (reasoning_content, content) tuple.
+        """
         ...
